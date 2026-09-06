@@ -3366,7 +3366,9 @@ async function openGroupTagManager(groupId, groupName) {
                 }
             };
             row.querySelector("[data-tag-delete-row]").onclick = async () => {
-                if (!confirm("Delete this tag? Schedules narrowed to it will target the whole group again.")) return;
+                const ok = await showConfirm(
+                    "Delete this tag? Schedules narrowed to it will target the whole group again.");
+                if (!ok) return;
                 const r = await apiCall("DELETE", `/api/device-tags/${tagId}`);
                 if (r && r.ok) {
                     tags = tags.filter(x => x.id !== tagId);

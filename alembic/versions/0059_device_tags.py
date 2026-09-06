@@ -109,13 +109,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_schedules_tag_id", table_name="schedules")
-    op.drop_constraint("fk_schedules_tag_id", "schedules", type_="foreignkey")
-    op.drop_column("schedules", "tag_id")
-    op.drop_index(
-        "idx_device_tag_assignments_tag_id", table_name="device_tag_assignments"
-    )
-    op.drop_table("device_tag_assignments")
-    op.drop_index("uq_device_tags_group_name_lower", table_name="device_tags")
-    op.drop_index("ix_device_tags_group_id", table_name="device_tags")
-    op.drop_table("device_tags")
+    """Not supported — see tests/test_migration_policy.py.
+
+    Rollbacks are forward-only in this project: to undo these tables, write a
+    new migration that drops them. Doing it here would also silently discard
+    every tag assignment and quietly widen any schedule that had been narrowed
+    to a tag, which is not something a rollback should do unannounced.
+    """
+    raise NotImplementedError("Downgrades are not supported; write a forward migration.")
