@@ -21,6 +21,17 @@ class Schedule(Base):
         UUID(as_uuid=True), ForeignKey("device_groups.id"), nullable=False
     )
 
+    # Optional narrowing of the target to one group-scoped tag. NULL means
+    # "every device in the group". When set, the tag must belong to
+    # ``group_id`` — tags are group-scoped, so a schedule can never fan out
+    # past its group. Display form is ``<Group>:<Tag>``.
+    tag_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("device_tags.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # What to play
     asset_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assets.id"), nullable=False
@@ -54,3 +65,4 @@ class Schedule(Base):
     # Relationships
     asset: Mapped["Asset"] = relationship(back_populates="schedules")
     group: Mapped["DeviceGroup"] = relationship()
+    tag: Mapped["DeviceTag | None"] = relationship()

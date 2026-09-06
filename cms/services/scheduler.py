@@ -1086,19 +1086,40 @@ async def get_device_schedule_status(
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
-    """Resolve target device IDs for a schedule's group memberships."""
+    """Resolve target device IDs for a schedule's group (narrowed by its tag)."""
     if not schedule.group_id:
         return []
     devices_by_group = await _load_adopted_devices_by_group_ids({schedule.group_id}, db)
-    return sorted(devices_by_group.get(schedule.group_id, set()))
+    targets = devices_by_group.get(schedule.group_id, set())
+    if schedule.tag_id:
+        tagged = await _load_tagged_device_ids({schedule.tag_id}, db)
+        targets = targets & tagged.get(schedule.tag_id, set())
+    return sorted(targets)
+
+
+async def _load_tagged_device_ids(tag_ids: set, db) -> dict:
+    """Resolve ``{tag_id: {device_ids}}`` for a set of group-scoped tags."""
+    if not tag_ids:
+        return {}
+    from cms.models.device_tag import DeviceTagAssignment
+
+    result = await db.execute(
+        select(DeviceTagAssignment.tag_id, DeviceTagAssignment.device_id).where(
+            DeviceTagAssignment.tag_id.in_(tag_ids)
+        )
+    )
+    out: dict = {}
+    for tid, did in result.all():
+        out.setdefault(tid, set()).add(did)
+    return out
 
 
 async def _load_adopted_devices_by_group_ids(group_ids: set, db) -> dict:
-    """Resolve adopted devices for each group during the mirror period.
+    """Resolve adopted devices for each group.
 
-    Stage 8a reads the join table as the primary source of truth while keeping
-    the legacy scalar in one centralized union helper until Stage 8b actually
-    drops ``devices.group_id``.
+    Routed through ``effective_device_group_rows_subquery`` so schedule
+    targeting, RBAC scoping and the UI all agree on what "the devices of a
+    group" means.
     """
     if not group_ids:
         return {}
@@ -1125,17 +1146,25 @@ async def load_target_devices_by_schedule(
     ``schedules``; used by dashboard / schedules UI to feed
     ``get_upcoming_schedules(..., target_devices_by_schedule=...)`` without
     per-schedule DB round-trips.  Only ADOPTED devices count as targets —
-    matches :func:`_get_target_device_ids`.
+    matches :func:`_get_target_device_ids`.  A schedule carrying a ``tag_id``
+    is narrowed to the tagged subset of its group.
     """
     group_ids = {s.group_id for s in schedules if s.group_id}
     if not group_ids:
         return {}
     devices_by_group = await _load_adopted_devices_by_group_ids(group_ids, db)
-    return {
-        str(s.id): devices_by_group.get(s.group_id, set())
-        for s in schedules
-        if s.group_id
-    }
+    tagged = await _load_tagged_device_ids(
+        {s.tag_id for s in schedules if s.group_id and s.tag_id}, db
+    )
+    out: dict[str, set[str]] = {}
+    for s in schedules:
+        if not s.group_id:
+            continue
+        targets = devices_by_group.get(s.group_id, set())
+        if s.tag_id:
+            targets = targets & tagged.get(s.tag_id, set())
+        out[str(s.id)] = targets
+    return out
 
 
 def _schedule_to_entry(

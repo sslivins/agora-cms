@@ -37,10 +37,16 @@
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Group<span class="tooltip">The device group this schedule applies to</span></span></label>
-                <select name="group_id" id="target_id" required onchange="filterAssetsByTarget()">
+                <select name="group_id" id="target_id" required onchange="filterAssetsByTarget(); refreshTagOptions()">
                     {% for g in groups %}
                     <option value="{{ g.id }}">{{ g.name }}</option>
                     {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label><span class="has-tooltip">Tag<span class="tooltip">Optionally narrow this schedule to the devices in the group carrying one tag. Tags belong to their group, so a schedule can never reach outside it.</span></span></label>
+                <select name="tag_id" id="target_tag_id">
+                    <option value="">All devices in group</option>
                 </select>
             </div>
         </div>
@@ -165,7 +171,7 @@
                 <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
                 <td class="cell-truncate"><span class="cell-text">{% if s.asset %}<span aria-hidden="true">{{ s.asset | asset_icon }}</span> {% endif %}{{ (s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else '—' }}</span></td>
                 <td>
-                    {{ s.group.name if s.group else '—' }}
+                    {{ s.group.name if s.group else '—' }}{% if s.tag %}<span class="badge" style="margin-left:.3rem;background:{{ s.tag.color }};color:#fff" title="Only devices in this group carrying this tag">{{ s.tag.name }}</span>{% endif %}
                 </td>
                 <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
@@ -194,6 +200,7 @@ const ASSET_ICONS = {"video": "🎬", "image": "📷", "webpage": "🌐", "strea
 const _scheduleData = {
     assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.display_name or a.original_filename or a.filename }}","type":"{{ a.asset_type.value }}","duration":{{ a.duration_seconds|default('null', true) if a.duration_seconds else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }},"ready":{{ 'true' if a.ready_for_selection else 'false' }},"notReadyReason":{{ (a.not_ready_reason or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
+    groupTags: {{ group_tags | default({}) | tojson }},
     isAdmin: {{ 'true' if is_admin else 'false' }}
 };
 window._playingScheduleIds = {{ playing_schedule_ids | tojson }};
@@ -317,6 +324,18 @@ function saveTimezone(tz) {
     }
     {% endif %}
 })();
+
+function refreshTagOptions() {
+    // Tags are group-scoped, so the option list is rebuilt whenever the target
+    // group changes; a tag from another group is not a valid target.
+    const sel = document.getElementById('target_tag_id');
+    if (!sel) return;
+    const groupId = document.getElementById('target_id').value;
+    const tags = (_scheduleData.groupTags || {})[groupId] || [];
+    sel.innerHTML = '<option value="">All devices in group</option>' +
+        tags.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+    sel.disabled = tags.length === 0;
+}
 
 function filterAssetsByTarget() {
     if (_scheduleData.isAdmin) return;  // Admins see all assets
@@ -852,6 +871,16 @@ function editSchedule(s) {
         `<option value="${g.id}" ${g.id === s.group_id ? "selected" : ""}>${g.name}</option>`
     ).join("");
 
+    // Tags are group-scoped, so the option list always comes from the group
+    // currently selected in this modal.
+    const tagOptsFor = (groupId, selectedTagId) => {
+        const tags = (_scheduleData.groupTags || {})[groupId] || [];
+        return `<option value="">All devices in group</option>` + tags.map(tg =>
+            `<option value="${tg.id}" ${tg.id === selectedTagId ? "selected" : ""}>${tg.name}</option>`
+        ).join("");
+    };
+    const tagOpts = tagOptsFor(s.group_id, s.tag_id);
+
     const currentTz = document.getElementById('_tz').value;
     const tzOptions = _tzList.map(tz =>
         `<option value="${tz.value}" ${tz.value === currentTz ? "selected" : ""}>${tz.label}</option>`
@@ -874,6 +903,10 @@ function editSchedule(s) {
         <div class="form-group">
             <label>Group</label>
             <select id="edit-group">${groupOpts}</select>
+        </div>
+        <div class="form-group">
+            <label>Tag</label>
+            <select id="edit-tag">${tagOpts}</select>
         </div>
         <div class="form-row">
             <div class="form-group">
@@ -928,6 +961,12 @@ function editSchedule(s) {
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
+    // Moving the schedule to another group invalidates its tag: the tag stays
+    // behind with its group, so the target widens back to the whole group.
+    box.querySelector("#edit-group").addEventListener("change", (ev) => {
+        const tagSel = box.querySelector("#edit-tag");
+        tagSel.innerHTML = tagOptsFor(ev.target.value, null);
+    });
     // Self-heal a stale "transcoding…" disabled asset option: the modal is
     // built instantly from the page-load snapshot (above) for a snappy open,
     // then we re-fetch canonical readiness and rebuild the picker in place if
@@ -1240,6 +1279,7 @@ function editSchedule(s) {
             name: box.querySelector("#edit-name").value,
             asset_id: box.querySelector("#edit-asset").value,
             group_id: editGroupId,
+            tag_id: box.querySelector("#edit-tag").value || null,
             start_time: startTime.length <= 5 ? startTime + ":00" : startTime,
             end_time: endTime ? (endTime.length <= 5 ? endTime + ":00" : endTime) : null,
             start_date: startDate || null,

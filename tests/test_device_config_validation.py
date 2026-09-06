@@ -253,14 +253,21 @@ class TestValidateDeviceEffectiveConfig:
 
 
 @pytest.mark.asyncio
-class TestValidateDeviceGroupTransitionDB:
+class TestValidateDeviceTransitionDB:
+    """Device transitions are now group + group-scoped-tag moves.
+
+    A device belongs to exactly one group, so the only way two equal-priority
+    overlapping schedules can both reach it is if they live in the *same*
+    group and are narrowed to tags the device wears at once.
+    """
+
     async def _seed(self, db_session):
         from cms.models.asset import Asset as AssetModel, AssetType as AT
         from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.models.device_tag import DeviceTag
         from cms.models.schedule import Schedule as Sched
 
         g1 = DeviceGroup(name="G1")
-        g2 = DeviceGroup(name="G2")
         dev = Device(
             id="val-pi",
             name="Val Pi",
@@ -270,40 +277,51 @@ class TestValidateDeviceGroupTransitionDB:
         asset = AssetModel(
             filename="v.mp4", asset_type=AT.VIDEO, size_bytes=1, checksum="z"
         )
-        db_session.add_all([g1, g2, dev, asset])
+        db_session.add_all([g1, dev, asset])
         await db_session.flush()
-        # Overlapping, equal-priority schedules in DIFFERENT groups.
+        dev.group_id = g1.id
+        morning = DeviceTag(group_id=g1.id, name="Morning", color="#111111")
+        promo = DeviceTag(group_id=g1.id, name="Promo", color="#222222")
+        db_session.add_all([morning, promo])
+        await db_session.flush()
+        # Overlapping, equal-priority schedules in the SAME group, each
+        # narrowed to a different tag.
         s1 = Sched(
             name="S1", asset_id=asset.id, group_id=g1.id, enabled=True,
             start_time=time(9, 0), end_time=time(11, 0), priority=5,
+            tag_id=morning.id,
         )
         s2 = Sched(
-            name="S2", asset_id=asset.id, group_id=g2.id, enabled=True,
+            name="S2", asset_id=asset.id, group_id=g1.id, enabled=True,
             start_time=time(10, 0), end_time=time(12, 0), priority=5,
+            tag_id=promo.id,
         )
         db_session.add_all([s1, s2])
         await db_session.commit()
-        return str(dev.id), g1.id, g2.id
+        return str(dev.id), g1.id, morning.id, promo.id
 
-    async def test_single_group_no_conflict(self, db_session):
+    async def test_single_tag_no_conflict(self, db_session):
         from cms.services.device_config_validation import (
-            validate_device_group_transition,
+            DeviceTargeting,
+            validate_device_transition,
         )
-        dev_id, g1, g2 = await self._seed(db_session)
-        res = await validate_device_group_transition(
-            db_session, after_membership={dev_id: {g1}}
+        dev_id, g1, morning, promo = await self._seed(db_session)
+        res = await validate_device_transition(
+            db_session,
+            after={dev_id: DeviceTargeting(group_id=g1, tag_ids={morning})},
         )
         assert not res.is_blocked
 
-    async def test_adding_second_group_introduces_conflict(self, db_session):
+    async def test_adding_second_tag_introduces_conflict(self, db_session):
         from cms.services.device_config_validation import (
-            validate_device_group_transition,
+            DeviceTargeting,
+            validate_device_transition,
         )
-        dev_id, g1, g2 = await self._seed(db_session)
-        res = await validate_device_group_transition(
+        dev_id, g1, morning, promo = await self._seed(db_session)
+        res = await validate_device_transition(
             db_session,
-            before_membership={dev_id: {g1}},
-            after_membership={dev_id: {g1, g2}},
+            before={dev_id: DeviceTargeting(group_id=g1, tag_ids={morning})},
+            after={dev_id: DeviceTargeting(group_id=g1, tag_ids={morning, promo})},
         )
         assert res.is_blocked
         assert len(res.all_introduced_conflicts()) == 1
@@ -311,14 +329,16 @@ class TestValidateDeviceGroupTransitionDB:
     async def test_unadopted_device_skipped(self, db_session):
         from cms.models.device import Device, DeviceStatus
         from cms.services.device_config_validation import (
-            validate_device_group_transition,
+            DeviceTargeting,
+            validate_device_transition,
         )
-        dev_id, g1, g2 = await self._seed(db_session)
+        dev_id, g1, morning, promo = await self._seed(db_session)
         dev = await db_session.get(Device, dev_id)
         dev.status = DeviceStatus.PENDING
         await db_session.commit()
-        res = await validate_device_group_transition(
-            db_session, after_membership={dev_id: {g1, g2}}
+        res = await validate_device_transition(
+            db_session,
+            after={dev_id: DeviceTargeting(group_id=g1, tag_ids={morning, promo})},
         )
         # Pending device receives no sync => not validated => not blocked.
         assert not res.is_blocked

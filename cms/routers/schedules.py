@@ -71,10 +71,16 @@ def _guard_deleted_asset(asset: Asset, enabled: bool, end_date) -> None:
 
 
 def _schedule_to_out(s: Schedule) -> ScheduleOut:
+    group_name = s.group.name if s.group else None
+    tag_name = s.tag.name if s.tag else None
     return ScheduleOut(
         **{c.key: getattr(s, c.key) for c in Schedule.__table__.columns},
         asset_filename=(s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else None,
-        group_name=s.group.name if s.group else None,
+        group_name=group_name,
+        tag_name=tag_name,
+        target_label=(
+            f"{group_name}:{tag_name}" if group_name and tag_name else group_name
+        ),
     )
 
 
@@ -82,6 +88,7 @@ def _eager_options():
     return [
         selectinload(Schedule.asset),
         selectinload(Schedule.group),
+        selectinload(Schedule.tag),
     ]
 
 
@@ -128,22 +135,85 @@ async def _unique_name(name: str, db: AsyncSession, exclude_id=None) -> str:
 
 
 async def _check_conflicts(schedule: Schedule, db: AsyncSession, exclude_id=None):
-    """Raise 409 if an existing schedule conflicts (same target, priority, overlapping window)."""
-    q = select(Schedule).where(Schedule.enabled == True)
-    if schedule.group_id:
-        q = q.where(Schedule.group_id == schedule.group_id)
-    else:
+    """Raise 409 if an existing schedule conflicts.
+
+    Two schedules conflict when they target overlapping device sets, run at the
+    same priority, and overlap in time. Both are always in the same group (the
+    group is the authorization boundary), so their device sets overlap unless
+    they are narrowed to *different* tags with no device in common — the
+    multi-purpose-device case tags exist to serve.
+
+    Tagging a device is validated separately (``device_config_validation``), so
+    a later "tag this device with both" cannot sneak a conflict past this gate.
+    """
+    if not schedule.group_id:
         return
-    q = q.where(Schedule.priority == schedule.priority)
+
+    q = select(Schedule).where(
+        Schedule.enabled == True,  # noqa: E712
+        Schedule.group_id == schedule.group_id,
+        Schedule.priority == schedule.priority,
+    )
     if exclude_id:
         q = q.where(Schedule.id != exclude_id)
     result = await db.execute(q)
-    for existing in result.scalars().all():
-        if schedules_conflict(schedule, existing):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Conflicts with '{existing.name}' — overlapping time on the same target at priority {schedule.priority}. Use a different priority to allow overlap.",
-            )
+    candidates = [s for s in result.scalars().all() if schedules_conflict(schedule, s)]
+    if not candidates:
+        return
+
+    tagged_cache: dict = {}
+    for existing in candidates:
+        if not await _targets_overlap(schedule, existing, db, tagged_cache):
+            continue
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Conflicts with '{existing.name}' — overlapping time on the "
+                f"same target at priority {schedule.priority}. Use a different "
+                "priority, or target a different tag, to allow overlap."
+            ),
+        )
+
+
+async def _targets_overlap(a: Schedule, b: Schedule, db: AsyncSession, cache: dict) -> bool:
+    """Whether two same-group schedules can reach a common device."""
+    if a.tag_id is None or b.tag_id is None:
+        # At least one targets the whole group, so it covers the other.
+        return True
+    if a.tag_id == b.tag_id:
+        return True
+
+    async def _devices(tag_id):
+        if tag_id not in cache:
+            from cms.services.device_tags import tagged_device_ids
+
+            cache[tag_id] = await tagged_device_ids(db, tag_id)
+        return cache[tag_id]
+
+    return bool(await _devices(a.tag_id) & await _devices(b.tag_id))
+
+
+async def _validate_schedule_tag(tag_id, group_id, db: AsyncSession) -> None:
+    """A schedule's tag must be one of its own group's tags.
+
+    Tags are group-scoped, so this is what makes a cross-group target
+    unrepresentable rather than merely discouraged.
+    """
+    if tag_id is None:
+        return
+    from cms.services.device_tags import get_tag
+
+    tag = await get_tag(db, tag_id)
+    if tag is None:
+        raise HTTPException(status_code=422, detail="Tag not found")
+    if group_id is None or tag.group_id != group_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Tag '{tag.name}' belongs to a different group. A schedule can "
+                "only be narrowed by a tag defined in the group it targets."
+            ),
+        )
 
 
 def _compute_end_time(start_time, loop_count: int, duration_seconds: float) -> dt_time:
@@ -317,6 +387,8 @@ async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSessi
     # Webpage/stream assets have no variants and are implicitly ready.
     await require_asset_ready(db, data.asset_id)
 
+    await _validate_schedule_tag(data.tag_id, data.group_id, db)
+
     # Check if asset is a webpage type
     asset = await db.get(Asset, data.asset_id)
     if not asset:
@@ -457,6 +529,13 @@ async def update_schedule(
 
     # Snapshot diff before any mutation or auto-computation
     changes = compute_diff(schedule, updates)
+
+    if "tag_id" in updates or "group_id" in updates:
+        await _validate_schedule_tag(
+            updates.get("tag_id", schedule.tag_id),
+            updates.get("group_id", schedule.group_id),
+            db,
+        )
 
     # Check if the resulting asset is a webpage/stream type (current or updated)
     target_asset_id = updates.get("asset_id", schedule.asset_id)

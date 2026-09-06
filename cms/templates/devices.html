@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% import "_macros.html" as macros %}
+{% import "_macros.html" as macros with context %}
 {% block title %}Devices — Agora CMS{% endblock %}
 {% block content %}
 
@@ -336,6 +336,14 @@ const TRIAGE_CRITICAL = new Set(['error', 'offline', 'storage-critical']);
 const TRIAGE_WARNING = new Set(['display-off', 'orphaned']);
 let _activeTriageFilter = 'all';
 const _activeGroupFilters = new Set();
+
+// Group-scoped device tags. Tags live inside a group and never span groups,
+// so the picker for a device is always keyed by that device's group id, read
+// live from the row's group <select>.
+window._deviceTagData = {
+    groupTags: {{ group_tags | default({}, true) | tojson }},
+    deviceGroup: {}
+};
 
 function triageGetTags(tr) {
     const raw = (tr.getAttribute('data-severity-tags') || '').trim();

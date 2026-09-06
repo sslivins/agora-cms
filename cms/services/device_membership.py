@@ -18,12 +18,13 @@ devices and carry no access control of their own.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
-from sqlalchemy import false, select
+from sqlalchemy import false, func, select
 
 from cms.models.device import Device, DeviceStatus
+from cms.models.device_tag import DeviceTag, DeviceTagAssignment
 
 
 @dataclass(slots=True)
@@ -33,6 +34,7 @@ class DeviceGroupChange:
     previous_group_id: uuid.UUID | None
     new_group_id: uuid.UUID | None
     changed: bool
+    dropped_tags: list[str] = field(default_factory=list)
 
 
 def effective_device_group_rows_subquery(
@@ -92,16 +94,30 @@ async def set_device_group(
 
     Tags are scoped to the group that defines them, so a device leaving a group
     leaves that group's tags behind rather than carrying meaningless labels
-    into the new one.
+    into the new one. The dropped tag names are returned so callers can tell
+    the operator what was lost instead of having it happen silently.
     """
+    from cms.services.device_tags import clear_device_tags
+
     previous = device.group_id
     change = DeviceGroupChange(
         previous_group_id=previous,
         new_group_id=group_id,
         changed=(previous != group_id),
     )
-    if dry_run or not change.changed:
+    if not change.changed:
         return change
 
+    if dry_run:
+        result = await db.execute(
+            select(DeviceTag.name)
+            .join(DeviceTagAssignment, DeviceTagAssignment.tag_id == DeviceTag.id)
+            .where(DeviceTagAssignment.device_id == device.id)
+            .order_by(func.lower(DeviceTag.name))
+        )
+        change.dropped_tags = list(result.scalars().all())
+        return change
+
+    change.dropped_tags = await clear_device_tags(db, device.id)
     device.group_id = group_id
     return change

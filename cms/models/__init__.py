@@ -22,6 +22,11 @@ from cms.models.schedule_missed_event import ScheduleMissedEvent  # noqa: F401
 from cms.models.setting import CMSSetting  # noqa: F401
 from cms.models.slideshow_slide import SlideshowSlide  # noqa: F401
 from cms.models.tag import Tag, AssetTag, DEFAULT_TAG_COLOR  # noqa: F401
+from cms.models.device_tag import (  # noqa: F401
+    DEFAULT_DEVICE_TAG_COLOR,
+    DeviceTag,
+    DeviceTagAssignment,
+)
 from cms.models.asset_view import AssetView  # noqa: F401
 from cms.models.chat_message import ChatMessage  # noqa: F401
 from cms.models.chat_pending_approval import ChatPendingApproval  # noqa: F401
@@ -45,4 +50,14 @@ Asset.tags = relationship(
     secondary="asset_tags",
     order_by="Tag.name",
     lazy="selectin",
+)
+
+# Group-scoped device tags. Attached here (rather than on Device) to keep the
+# device model free of tag knowledge and to mirror the Asset.tags pattern.
+Device.tags = relationship(
+    "DeviceTag",
+    secondary="device_tag_assignments",
+    order_by="DeviceTag.name",
+    lazy="selectin",
+    viewonly=True,
 )

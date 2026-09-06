@@ -96,7 +96,7 @@
     <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
     <td class="cell-truncate"><span class="cell-text">{% if s.asset %}<span aria-hidden="true">{{ s.asset | asset_icon }}</span> {% endif %}{{ (s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else '—' }}</span></td>
     <td>
-        {{ s.group.name if s.group else '—' }}
+        {{ s.group.name if s.group else '—' }}{% if s.tag %}<span class="badge" style="margin-left:.3rem;background:{{ s.tag.color }};color:#fff" title="Only devices in this group carrying this tag">{{ s.tag.name }}</span>{% endif %}
     </td>
     <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
     <td>{{ s.priority }}</td>
@@ -729,6 +729,17 @@
         {% else %}
         {{ (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '-' }}
         {% endif %}
+        {% set _dtags = (device_tags | default({}, true)).get(d.id | string, []) %}
+        <div class="device-tag-chips" data-device-tags="{{ d.id }}">
+            {% for tg in _dtags %}
+            <span class="badge device-tag-chip" data-tag-id="{{ tg.id }}" style="background:{{ tg.color }};color:#fff">{{ tg.name }}</span>
+            {% endfor %}
+            {% if 'devices:write' in user_perms %}
+            <button type="button" class="btn-link device-tag-edit" data-device-tag-edit="{{ d.id }}"
+                    onclick="event.stopPropagation(); openDeviceTagEditor('{{ d.id }}')"
+                    title="Edit tags">&#9998;</button>
+            {% endif %}
+        </div>
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -1073,10 +1084,12 @@
             </select>
             {% if g.schedule_count %}
             {% call kebab_menu() %}
+                <button type="button" role="menuitem" onclick="openGroupTagManager('{{ g.id }}', '{{ g.name }}')" title="Create, rename or delete tags scoped to this group">Manage tags</button>
                 <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Cannot delete — used by {{ g.schedule_count }} schedule{{ 's' if g.schedule_count != 1 }}. Remove from all schedules first.">Delete</button>
             {% endcall %}
             {% else %}
             {% call kebab_menu() %}
+                <button type="button" role="menuitem" onclick="openGroupTagManager('{{ g.id }}', '{{ g.name }}')" title="Create, rename or delete tags scoped to this group">Manage tags</button>
                 <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteGroup('{{ g.id }}')" title="Delete this group — devices will be ungrouped">Delete</button>
             {% endcall %}
             {% endif %}
