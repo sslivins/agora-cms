@@ -354,9 +354,7 @@
     {# The per-row "+ tag" picker is built client-side by TagPicker (see the
        'asset' scope registration below); it only needs the tag list. #}
     <script>
-        window._allAssetTags = [
-            {% for t in all_tags %}{"id": {{ t.id | string | tojson }}, "name": {{ t.name | tojson }}, "color": {{ t.color | tojson }}}{{ "," if not loop.last }}{% endfor %}
-        ];
+        window._allAssetTags = {{ all_tags | tojson }};
     </script>
 
     <div class="table-wrap" id="assets-table-wrap">
