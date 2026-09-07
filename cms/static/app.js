@@ -3461,16 +3461,11 @@ async function openGroupTagManager(groupId, groupName) {
     }
     let tags = await resp.json();
 
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    overlay.style.display = "flex";
-    const box = document.createElement("div");
-    box.className = "modal-box";
+    // Shared modal shell: no backdrop dismissal (rows are live inputs), Esc
+    // closes. Reload on close so chips elsewhere on the page pick up renames
+    // and recolours.
+    const { box, close } = createModal({ onClose: () => location.reload() });
     box.style.minWidth = "420px";
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    const close = () => { overlay.remove(); location.reload(); };
-    overlay.onclick = (ev) => { if (ev.target === overlay) close(); };
 
     function render() {
         box.innerHTML = `
@@ -3482,9 +3477,9 @@ async function openGroupTagManager(groupId, groupName) {
             <div id="group-tag-list">
                 ${tags.length ? tags.map(tg => `
                 <div class="form-row" data-tag-row="${tg.id}" style="align-items:center;gap:.5rem;">
-                    <input type="text" value="${tg.name}" data-tag-name style="flex:1">
+                    <input type="text" value="${tg.name}" data-tag-name style="flex:1"
+                           title="Press Enter or click away to rename">
                     <input type="color" value="${tg.color}" data-tag-color>
-                    <button type="button" class="btn btn-sm" data-tag-save-row>Save</button>
                     <button type="button" class="btn btn-sm btn-danger" data-tag-delete-row>Delete</button>
                 </div>`).join("") : `<p class="text-muted">No tags yet.</p>`}
             </div>
@@ -3517,17 +3512,41 @@ async function openGroupTagManager(groupId, groupName) {
 
         box.querySelectorAll("[data-tag-row]").forEach(row => {
             const tagId = row.dataset.tagRow;
-            row.querySelector("[data-tag-save-row]").onclick = async () => {
-                const r = await apiCall("PATCH", `/api/device-tags/${tagId}`, {
-                    name: row.querySelector("[data-tag-name]").value.trim(),
-                    color: row.querySelector("[data-tag-color]").value,
-                });
-                if (r && r.ok) showToast("Tag updated");
-                else {
-                    const err = r ? await r.json().catch(() => ({})) : {};
-                    showToast(err.detail || "Could not update tag", true);
+            const nameEl = row.querySelector("[data-tag-name]");
+            const colorEl = row.querySelector("[data-tag-color]");
+
+            // Each field writes itself. There is no Save button and Done only
+            // closes the dialog, so there is never an edit sitting unsaved
+            // that an outside click or Escape could throw away.
+            const patch = async (el, body, previous) => {
+                const r = await apiCall("PATCH", `/api/device-tags/${tagId}`, body);
+                if (r && r.ok) {
+                    const updated = await r.json();
+                    const known = tags.find(x => x.id === tagId);
+                    if (known) Object.assign(known, updated);
+                    showToast("Tag updated");
+                    return;
                 }
+                // Put the field back so what is on screen is what is stored.
+                el.value = previous;
+                const err = r ? await r.json().catch(() => ({})) : {};
+                showToast(err.detail || "Could not update tag", true);
             };
+
+            nameEl.onchange = () => {
+                const previous = (tags.find(x => x.id === tagId) || {}).name || "";
+                const name = nameEl.value.trim();
+                if (!name) { nameEl.value = previous; return; }
+                if (name === previous) return;
+                patch(nameEl, { name }, previous);
+            };
+            nameEl.onkeydown = (ev) => { if (ev.key === "Enter") nameEl.blur(); };
+            colorEl.onchange = () => {
+                const previous = (tags.find(x => x.id === tagId) || {}).color || "";
+                if (colorEl.value === previous) return;
+                patch(colorEl, { color: colorEl.value }, previous);
+            };
+
             row.querySelector("[data-tag-delete-row]").onclick = async () => {
                 const ok = await showConfirm(
                     "Delete this tag? Schedules narrowed to it will target the whole group again.");

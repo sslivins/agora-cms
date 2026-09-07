@@ -113,6 +113,7 @@ class TestGroupTagManager:
         assert [t["name"] for t in tags] == ["Summer Promos"]
 
     def test_rename_tag(self, page: Page, api, ws_url, e2e_server):
+        """Renaming writes on blur — there is no Save button to forget."""
         group_id = _make_group(api, "Rename Tag Group")
         _make_tag(api, group_id, "Draft Name")
 
@@ -121,12 +122,67 @@ class TestGroupTagManager:
         modal = _open_tag_manager(page, group_id)
 
         row = modal.locator("[data-tag-row]").first
+        expect(row.locator("[data-tag-save-row]")).to_have_count(0)
+
         row.locator("[data-tag-name]").fill("Final Name")
-        row.locator("[data-tag-save-row]").click()
+        row.locator("[data-tag-name]").blur()
         expect(page.locator(".toast-success")).to_be_visible(timeout=5000)
 
         tags = api.get(f"/api/groups/{group_id}/tags").json()
         assert [t["name"] for t in tags] == ["Final Name"]
+
+    def test_backdrop_click_does_not_close_the_manager(self, page: Page, api, ws_url, e2e_server):
+        """It holds live inputs, so a stray click outside must not dismiss it."""
+        group_id = _make_group(api, "Sticky Modal Group")
+        _make_tag(api, group_id, "Keeper")
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        modal = _open_tag_manager(page, group_id)
+
+        page.locator(".modal-overlay").last.click(position={"x": 5, "y": 5})
+        page.wait_for_timeout(300)
+        expect(modal).to_be_visible()
+        expect(modal.locator("[data-tag-row]")).to_have_count(1)
+
+    def test_recolor_tag_saves_immediately(self, page: Page, api, ws_url, e2e_server):
+        """The colour picker was the trap: picking a colour and closing the
+        dialog used to discard it, because the write lived behind a Save."""
+        group_id = _make_group(api, "Recolor Group")
+        _make_tag(api, group_id, "Repaint", color="#3366cc")
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        modal = _open_tag_manager(page, group_id)
+
+        row = modal.locator("[data-tag-row]").first
+        row.locator("[data-tag-color]").fill("#ff8800")
+        expect(page.locator(".toast-success")).to_be_visible(timeout=5000)
+
+        # Close the dialog the lossy way — an outside click, not "Done".
+        assert api.get(f"/api/groups/{group_id}/tags").json()[0]["color"] == "#ff8800"
+
+    def test_rejected_rename_restores_the_field(self, page: Page, api, ws_url, e2e_server):
+        """A refused write must not leave the input showing a value that
+        isn't stored — the whole point of dropping the Save button."""
+        group_id = _make_group(api, "Clash Group")
+        _make_tag(api, group_id, "Taken")
+        _make_tag(api, group_id, "Renameable")
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        modal = _open_tag_manager(page, group_id)
+
+        # Rows are ordered by name, so "Renameable" is first.
+        target = modal.locator("[data-tag-row]").first.locator("[data-tag-name]")
+        expect(target).to_have_value("Renameable")
+        target.fill("Taken")
+        target.blur()
+
+        expect(page.locator(".toast-error")).to_be_visible(timeout=5000)
+        expect(target).to_have_value("Renameable")
+        names = sorted(t["name"] for t in api.get(f"/api/groups/{group_id}/tags").json())
+        assert names == ["Renameable", "Taken"]
 
     def test_delete_tag(self, page: Page, api, ws_url, e2e_server):
         group_id = _make_group(api, "Delete Tag Group")
