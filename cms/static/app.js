@@ -3244,6 +3244,10 @@ const TagPicker = (function () {
     const scopes = {};
     let popup = null;
     let ctx = null;
+    // Chips past this many collapse behind a "+N" toggle. Keep in sync with
+    // _limit in the tag_chips() macro in _macros.html — the server renders the
+    // collapsed state directly so there is no expand-then-collapse flash.
+    const CHIP_LIMIT = 3;
 
     function contrastTextColor(hex) {
         try {
@@ -3311,6 +3315,41 @@ const TagPicker = (function () {
             }
             if (addBtn) b.insertBefore(chip, addBtn); else b.appendChild(chip);
         });
+        _applyOverflow(b);
+    }
+
+    // Collapse everything past CHIP_LIMIT behind a "+N" button. The chips stay
+    // in the DOM — appliedIds()/tagNames() and the conflict check in
+    // assignGroup() must still see every tag, hidden or not.
+    function _applyOverflow(b) {
+        const chips = Array.from(b.querySelectorAll(".tag-chip"));
+        const stale = b.querySelector(".tag-chips-more");
+        if (stale) stale.remove();
+        chips.forEach((c, i) => {
+            if (i >= CHIP_LIMIT) c.setAttribute("data-tag-overflow", "");
+            else c.removeAttribute("data-tag-overflow");
+        });
+        b.classList.toggle("tag-chips-collapsed", chips.length > CHIP_LIMIT);
+        if (chips.length <= CHIP_LIMIT) return;
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "tag-chips-more";
+        more.textContent = `+${chips.length - CHIP_LIMIT}`;
+        more.title = `Show all ${chips.length} tags`;
+        more.onclick = (ev) => { ev.stopPropagation(); toggleMore(more); };
+        const addBtn = b.querySelector(".tag-add-btn");
+        if (addBtn) b.insertBefore(more, addBtn); else b.appendChild(more);
+    }
+
+    function toggleMore(btn) {
+        const b = btn.closest(".tag-chips");
+        if (!b) return;
+        const collapsed = b.classList.toggle("tag-chips-collapsed");
+        const hidden = b.querySelectorAll(".tag-chip[data-tag-overflow]").length;
+        btn.textContent = collapsed ? `+${hidden}` : "less";
+        btn.title = collapsed
+            ? `Show all ${b.querySelectorAll(".tag-chip").length} tags`
+            : "Show fewer tags";
     }
 
     function _popup() {
@@ -3354,6 +3393,7 @@ const TagPicker = (function () {
                 sw.style.background = t.color;
                 item.appendChild(sw);
                 item.appendChild(document.createTextNode(t.name));
+                item.title = t.name;
                 item.onclick = () => pick(t.id);
                 pop.appendChild(item);
             });
@@ -3390,7 +3430,8 @@ const TagPicker = (function () {
 
     return {
         register: (name, handlers) => { scopes[name] = handlers; },
-        open, pick, remove, labelClick, render, close,
+        open, pick, remove, labelClick, render, close, toggleMore,
+        applyOverflow: _applyOverflow,
         box, appliedIds, tagNames, contrastTextColor,
     };
 })();
