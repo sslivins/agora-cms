@@ -17,17 +17,26 @@
                           clickable=true, extra_class='tag-chips-inline') }}
 #}
 {% macro tag_chips(scope, owner_id, tags, can_write, clickable=false, extra_class='') -%}
-<span class="tag-chips {{ extra_class }}" data-tag-scope="{{ scope }}" data-tag-owner="{{ owner_id }}">
+{# Chips past this many are collapsed behind a "+N" toggle so a heavily
+   tagged row can't set the height of a whole table. Keep in sync with
+   CHIP_LIMIT in app.js — tests/test_tag_chip_limit.py asserts they match. #}
+{% set _limit = 3 %}
+{% set _hidden = tags | length - _limit %}
+<span class="tag-chips {{ extra_class }}{% if _hidden > 0 %} tag-chips-collapsed{% endif %}" data-tag-scope="{{ scope }}" data-tag-owner="{{ owner_id }}">
     {% for t in tags %}
     {% set _tc = t.color | contrast_text_color %}
-    <span class="tag-chip" data-tag-id="{{ t.id }}" style="background:{{ t.color }}; color:{{ _tc }};">
-        <span class="tag-chip-label"{% if clickable %} data-clickable title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); TagPicker.labelClick('{{ scope }}', '{{ t.id }}')"{% endif %}>{{ t.name }}</span>
+    <span class="tag-chip" data-tag-id="{{ t.id }}"{% if loop.index0 >= _limit %} data-tag-overflow{% endif %} style="background:{{ t.color }}; color:{{ _tc }};">
+        <span class="tag-chip-label"{% if clickable %} data-clickable title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); TagPicker.labelClick('{{ scope }}', '{{ t.id }}')"{% else %} title="{{ t.name }}"{% endif %}>{{ t.name }}</span>
         {% if can_write %}
         <button type="button" class="tag-chip-remove" title="Remove tag {{ t.name }}"
                 onclick="event.stopPropagation(); TagPicker.remove('{{ scope }}', '{{ owner_id }}', '{{ t.id }}')">&times;</button>
         {% endif %}
     </span>
     {% endfor %}
+    {% if _hidden > 0 %}
+    <button type="button" class="tag-chips-more" title="Show all {{ tags | length }} tags"
+            onclick="event.stopPropagation(); TagPicker.toggleMore(this)">+{{ _hidden }}</button>
+    {% endif %}
     {% if can_write %}
     <button type="button" class="tag-add-btn" data-tag-add="{{ owner_id }}" title="Add tag"
             onclick="event.stopPropagation(); TagPicker.open('{{ scope }}', '{{ owner_id }}', event)">+ tag</button>

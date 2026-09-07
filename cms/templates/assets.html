@@ -1434,9 +1434,12 @@ function fallbackCopy(text, onSuccess) {
                 '</div>' +
             '</div>';
 
+        // Cards are narrow, so collapse a long tag list the same way rows do.
+        const tagBox = card.querySelector('.asset-grid-tags');
+        if (tagBox) TagPicker.applyOverflow(tagBox);
+
         // Wire selection checkbox.
-        const cb = card.querySelector('.bulk-select-grid');
-        cb.checked = state.selection.has(a.id);
+        const cb = card.querySelector('.bulk-select-grid');        cb.checked = state.selection.has(a.id);
         cb.addEventListener('change', () => {
             if (cb.checked) state.selection.add(a.id);
             else state.selection.delete(a.id);

@@ -1197,7 +1197,7 @@ tr.highlight-new td {
     padding: 0.25rem 0;
 }
 .group-popup[popover]:popover-open { display: flex; }
-.group-popup-item { background: none; border: none; color: var(--text); cursor: pointer; padding: 0.4rem 0.75rem; text-align: left; font-size: 0.85rem; white-space: nowrap; }
+.group-popup-item { background: none; border: none; color: var(--text); cursor: pointer; padding: 0.4rem 0.75rem; text-align: left; font-size: 0.85rem; white-space: nowrap; max-width: 18rem; overflow: hidden; text-overflow: ellipsis; }
 .group-popup-item:hover { background: var(--primary); color: var(--text-on-accent); }
 
 /* ── Shared tag chips + "+ tag" picker ──────────────────────────────────
@@ -1220,6 +1220,16 @@ tr.highlight-new td {
 /* A chip carrying a remove button needs less padding on that side so the
    circular × sits flush inside the pill. */
 .tag-chip:has(.tag-chip-remove) { padding-right: 0.1rem; }
+/* Tag names run to 64 chars. Truncate to keep one chip from setting the
+   width of a whole table column; the full name stays in the title. */
+.tag-chip-label {
+    display: block;
+    max-width: 9rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .tag-chip-label[data-clickable] { cursor: pointer; }
 .tag-chip-remove {
     background: rgba(0, 0, 0, 0.25);
@@ -1249,6 +1259,21 @@ tr.highlight-new td {
     vertical-align: middle;
 }
 .tag-add-btn:hover { color: var(--text); border-color: var(--text-muted, #999); }
+/* Chips past the collapse limit are held in the DOM (so tag lookups still
+   see them) but hidden until the "+N" button expands the set. */
+.tag-chips-collapsed .tag-chip[data-tag-overflow] { display: none; }
+.tag-chips-more {
+    background: var(--overlay-hover);
+    color: var(--text-muted, #999);
+    border: 1px solid var(--overlay-strong);
+    border-radius: 999px;
+    font-size: 0.7rem;
+    line-height: 1.4;
+    padding: 0.02rem 0.4rem;
+    cursor: pointer;
+    vertical-align: middle;
+}
+.tag-chips-more:hover { color: var(--text); }
 .tag-picker-empty { padding: 0.4rem 0.75rem; font-size: 0.8rem; white-space: nowrap; }
 .tag-picker-swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
 

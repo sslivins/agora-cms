@@ -263,6 +263,68 @@ class TestDeviceTagAssignment:
         expect(chips).to_have_count(0, timeout=5000)
         assert api.get("/api/devices/tag-dev-006/tags").json()["tags"] == []
 
+    def test_many_tags_collapse_behind_a_more_button(self, page: Page, api, ws_url, e2e_server):
+        """A heavily tagged device must not blow out its table row."""
+        group_id = _make_group(api, "Crowded Group")
+        _adopt(api, ws_url, "tag-dev-007", "Crowded Device")
+        api.patch("/api/devices/tag-dev-007", json={"group_id": group_id})
+        tag_ids = [_make_tag(api, group_id, f"Tag {i}") for i in range(6)]
+        api.put("/api/devices/tag-dev-007/tags", json={"tag_ids": tag_ids})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        expand_group_panel(page.locator(f'div.group-panel[data-group-id="{group_id}"]'))
+
+        box = _tag_box(page, "tag-dev-007")
+        # All six are in the DOM -- the group-move warning reads tags from here.
+        expect(_chips(page, "tag-dev-007")).to_have_count(6)
+        # ...but only three are on screen, behind a "+3".
+        expect(box.locator(".tag-chip:visible")).to_have_count(3)
+        more = box.locator(".tag-chips-more")
+        expect(more).to_have_text("+3")
+
+        more.click()
+        expect(box.locator(".tag-chip:visible")).to_have_count(6)
+        expect(more).to_have_text("less")
+
+        more.click()
+        expect(box.locator(".tag-chip:visible")).to_have_count(3)
+
+    def test_few_tags_render_no_more_button(self, page: Page, api, ws_url, e2e_server):
+        group_id = _make_group(api, "Sparse Group")
+        _adopt(api, ws_url, "tag-dev-008", "Sparse Device")
+        api.patch("/api/devices/tag-dev-008", json={"group_id": group_id})
+        api.put("/api/devices/tag-dev-008/tags", json={
+            "tag_ids": [_make_tag(api, group_id, "Only One")]})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        expand_group_panel(page.locator(f'div.group-panel[data-group-id="{group_id}"]'))
+
+        expect(_tag_box(page, "tag-dev-008").locator(".tag-chips-more")).to_have_count(0)
+
+    def test_long_tag_name_is_truncated_not_wrapped(self, page: Page, api, ws_url, e2e_server):
+        """Names go to 64 chars; the chip clamps and keeps the full name in
+        the tooltip rather than stretching the column."""
+        group_id = _make_group(api, "Verbose Group")
+        _adopt(api, ws_url, "tag-dev-009", "Verbose Device")
+        api.patch("/api/devices/tag-dev-009", json={"group_id": group_id})
+        long_name = "Seasonal Promotional Content For The Front Window Display"
+        api.put("/api/devices/tag-dev-009/tags", json={
+            "tag_ids": [_make_tag(api, group_id, long_name)]})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        expand_group_panel(page.locator(f'div.group-panel[data-group-id="{group_id}"]'))
+
+        label = _chips(page, "tag-dev-009").first.locator(".tag-chip-label")
+        assert label.get_attribute("title").lower() == long_name.lower()
+        width = label.evaluate("el => el.getBoundingClientRect().width")
+        height = label.evaluate("el => el.getBoundingClientRect().height")
+        # 9rem cap at the 16px root, plus a little slack for borders.
+        assert width <= 150, f"chip label not clamped: {width}px"
+        assert height < 30, f"chip label wrapped to a second line: {height}px"
+
     def test_editor_refuses_ungrouped_device(self, page: Page, api, ws_url, e2e_server):
         """A tag has no meaning without an owning group, so the picker declines."""
         _adopt(api, ws_url, "tag-dev-002", "Homeless Device")
