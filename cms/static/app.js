@@ -600,11 +600,8 @@ async function assignGroup(deviceId, groupId) {
     // Tags belong to the group they were created in, so moving a device out
     // always strips them. The server has already dropped them; mirror that in
     // the DOM and tell the operator what was lost.
-    const chipBox = document.querySelector(`[data-device-tags="${deviceId}"]`);
-    const dropped = chipBox
-        ? Array.from(chipBox.querySelectorAll(".device-tag-chip")).map(c => c.textContent.trim())
-        : [];
-    if (chipBox) chipBox.querySelectorAll(".device-tag-chip").forEach(c => c.remove());
+    const dropped = TagPicker.tagNames("device", deviceId);
+    TagPicker.render("device", deviceId, []);
     const msg = dropped.length
         ? `Group updated — removed tag${dropped.length > 1 ? "s" : ""}: ${dropped.join(", ")}`
         : "Group updated";
@@ -3229,6 +3226,176 @@ window.addEventListener("resize", _repositionAllOpenPopovers);
 })();
 
 
+// ── Shared tag chips + "+ tag" picker ───────────────────────────────────
+//
+// One picker for every kind of tag in the CMS. A page registers a scope
+// carrying the handlers for its own tag model; the markup is identical
+// everywhere (see the tag_chips() macro in _macros.html). The popup is built
+// lazily per click, so a scope whose tag list varies per row — device tags
+// depend on the device's group — needs no server-rendered popup markup.
+//
+// Handlers:
+//   listTags(ownerId)     -> array (or Promise) of {id, name, color}. Return
+//                            a string instead to refuse with that message.
+//   add(ownerId, tagId)
+//   remove(ownerId, tagId)
+//   labelClick(tagId)     -> optional; fired by clicking a chip's name.
+const TagPicker = (function () {
+    const scopes = {};
+    let popup = null;
+    let ctx = null;
+
+    function contrastTextColor(hex) {
+        try {
+            let h = (hex || "").replace("#", "");
+            if (h.length === 3) h = h.split("").map(c => c + c).join("");
+            if (h.length !== 6) return "#ffffff";
+            const lin = (c) => (c <= 0.03928) ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            const y = 0.2126 * lin(parseInt(h.slice(0, 2), 16) / 255)
+                + 0.7152 * lin(parseInt(h.slice(2, 4), 16) / 255)
+                + 0.0722 * lin(parseInt(h.slice(4, 6), 16) / 255);
+            return y > 0.5 ? "#1a1a1a" : "#ffffff";
+        } catch (e) { return "#ffffff"; }
+    }
+
+    function box(scope, ownerId) {
+        return document.querySelector(
+            `.tag-chips[data-tag-scope="${scope}"][data-tag-owner="${ownerId}"]`);
+    }
+
+    function appliedIds(scope, ownerId) {
+        const b = box(scope, ownerId);
+        return new Set(b
+            ? Array.from(b.querySelectorAll(".tag-chip")).map(c => c.dataset.tagId)
+            : []);
+    }
+
+    // Chip text without the remove button's "×".
+    function tagNames(scope, ownerId) {
+        const b = box(scope, ownerId);
+        return b
+            ? Array.from(b.querySelectorAll(".tag-chip-label")).map(e => e.textContent.trim())
+            : [];
+    }
+
+    function render(scope, ownerId, tags, opts = {}) {
+        const b = box(scope, ownerId);
+        if (!b) return;
+        const addBtn = b.querySelector(".tag-add-btn");
+        b.querySelectorAll(".tag-chip").forEach(c => c.remove());
+        (tags || []).forEach(t => {
+            const chip = document.createElement("span");
+            chip.className = "tag-chip";
+            chip.dataset.tagId = t.id;
+            chip.style.background = t.color;
+            chip.style.color = contrastTextColor(t.color);
+            const label = document.createElement("span");
+            label.className = "tag-chip-label";
+            label.textContent = t.name;
+            if (opts.clickable) {
+                label.dataset.clickable = "";
+                label.title = `Filter by tag: ${t.name}`;
+                label.onclick = (ev) => { ev.stopPropagation(); labelClick(scope, t.id); };
+            }
+            chip.appendChild(label);
+            // The add button is only rendered with write permission, so its
+            // presence is the signal that chips are removable too.
+            if (addBtn) {
+                const x = document.createElement("button");
+                x.type = "button";
+                x.className = "tag-chip-remove";
+                x.title = `Remove tag ${t.name}`;
+                x.textContent = "\u00d7";
+                x.onclick = (ev) => { ev.stopPropagation(); remove(scope, ownerId, t.id); };
+                chip.appendChild(x);
+            }
+            if (addBtn) b.insertBefore(chip, addBtn); else b.appendChild(chip);
+        });
+    }
+
+    function _popup() {
+        if (popup && document.body.contains(popup)) return popup;
+        popup = document.createElement("div");
+        popup.id = "tag-picker-popup";
+        popup.className = "group-popup";
+        popup.setAttribute("popover", "");
+        document.body.appendChild(popup);
+        return popup;
+    }
+
+    async function open(scope, ownerId, ev) {
+        const h = scopes[scope];
+        if (!h) return;
+        let tags = h.listTags ? await h.listTags(ownerId) : [];
+        if (typeof tags === "string") {
+            showToast(tags, true);
+            return;
+        }
+        const applied = appliedIds(scope, ownerId);
+        const choices = (tags || []).filter(t => !applied.has(String(t.id)));
+        const pop = _popup();
+        ctx = { scope, ownerId };
+        pop.innerHTML = "";
+        if (!choices.length) {
+            const hint = document.createElement("div");
+            hint.className = "tag-picker-empty text-muted";
+            hint.textContent = (tags && tags.length)
+                ? "All tags already applied"
+                : "No tags available";
+            pop.appendChild(hint);
+        } else {
+            choices.forEach(t => {
+                const item = document.createElement("button");
+                item.type = "button";
+                item.className = "group-popup-item";
+                item.dataset.tagId = t.id;
+                const sw = document.createElement("span");
+                sw.className = "tag-picker-swatch";
+                sw.style.background = t.color;
+                item.appendChild(sw);
+                item.appendChild(document.createTextNode(t.name));
+                item.onclick = () => pick(t.id);
+                pop.appendChild(item);
+            });
+        }
+        // Open first so the top-layer popover has a measurable size, then
+        // anchor it to the clicked "+ tag" button.
+        const anchor = (ev && ev.currentTarget) || (ev && ev.target);
+        try { pop.showPopover(); } catch (e) { /* not supported */ }
+        if (anchor && typeof positionPopover === "function") {
+            positionPopover(pop, { placement: "below", align: "left", anchor });
+        }
+    }
+
+    function close() {
+        if (popup) { try { popup.hidePopover(); } catch (e) { /* already closed */ } }
+    }
+
+    async function pick(tagId) {
+        close();
+        if (!ctx) return;
+        const h = scopes[ctx.scope];
+        if (h && h.add) await h.add(ctx.ownerId, tagId);
+    }
+
+    async function remove(scope, ownerId, tagId) {
+        const h = scopes[scope];
+        if (h && h.remove) await h.remove(ownerId, tagId);
+    }
+
+    function labelClick(scope, tagId) {
+        const h = scopes[scope];
+        if (h && h.labelClick) h.labelClick(tagId);
+    }
+
+    return {
+        register: (name, handlers) => { scopes[name] = handlers; },
+        open, pick, remove, labelClick, render, close,
+        box, appliedIds, tagNames, contrastTextColor,
+    };
+})();
+window.TagPicker = TagPicker;
+
 // ── Group-scoped device tags ────────────────────────────────────────────
 //
 // Tags are labels scoped to the device's owning group; they carry no access
@@ -3239,85 +3406,52 @@ function _deviceTagState() {
     return (window._deviceTagData || { groupTags: {}, deviceGroup: {} });
 }
 
-function renderDeviceTagChips(deviceId, tags) {
-    const box = document.querySelector(`[data-device-tags="${deviceId}"]`);
-    if (!box) return;
-    box.querySelectorAll(".device-tag-chip").forEach(c => c.remove());
-    const editBtn = box.querySelector(".device-tag-edit");
-    tags.forEach(tg => {
-        const chip = document.createElement("span");
-        chip.className = "badge device-tag-chip";
-        chip.dataset.tagId = tg.id;
-        chip.style.background = tg.color;
-        chip.style.color = "#fff";
-        chip.textContent = tg.name;
-        box.insertBefore(chip, editBtn);
-    });
-}
-
-async function openDeviceTagEditor(deviceId) {
-    const state = _deviceTagState();
-    const groupSel = document.querySelector(
+function _deviceGroupId(deviceId) {
+    const sel = document.querySelector(
         `tr[data-device-id="${deviceId}"] select[data-device-group-select]`);
-    const groupId = groupSel ? groupSel.value : (state.deviceGroup[deviceId] || "");
-    if (!groupId) {
-        showToast("Assign the device to a group before tagging it", true);
-        return;
-    }
-    const available = (state.groupTags || {})[groupId] || [];
-    if (!available.length) {
-        showToast("This group has no tags yet — create one from the group header", true);
-        return;
-    }
-    const chipBox = document.querySelector(`[data-device-tags="${deviceId}"]`);
-    const current = new Set(
-        Array.from(chipBox ? chipBox.querySelectorAll(".device-tag-chip") : [])
-            .map(c => c.dataset.tagId));
-
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    overlay.style.display = "flex";
-    const box = document.createElement("div");
-    box.className = "modal-box";
-    box.innerHTML = `
-        <h3 style="margin-bottom:1rem;">Device Tags</h3>
-        <div class="form-group" id="device-tag-options">
-            ${available.map(tg => `
-            <label style="display:block;margin:.25rem 0;">
-                <input type="checkbox" value="${tg.id}" ${current.has(tg.id) ? "checked" : ""}>
-                <span class="badge" style="background:${tg.color};color:#fff">${tg.name}</span>
-            </label>`).join("")}
-        </div>
-        <div class="modal-actions">
-            <button type="button" class="btn btn-secondary" data-tag-cancel>Cancel</button>
-            <button type="button" class="btn btn-primary" data-tag-save>Save</button>
-        </div>`;
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const close = () => overlay.remove();
-    box.querySelector("[data-tag-cancel]").onclick = close;
-    overlay.onclick = (ev) => { if (ev.target === overlay) close(); };
-
-    box.querySelector("[data-tag-save]").onclick = async () => {
-        const tagIds = Array.from(box.querySelectorAll("#device-tag-options input:checked"))
-            .map(i => i.value);
-        const resp = await apiCall("PUT", `/api/devices/${deviceId}/tags`, { tag_ids: tagIds });
-        if (resp && resp.ok) {
-            const data = await resp.json();
-            renderDeviceTagChips(deviceId, data.tags || []);
-            showToast("Tags updated");
-            close();
-        } else if (resp && resp.status === 409) {
-            // The tag set would place this device under two equal-priority
-            // schedules that overlap in time.
-            const err = await resp.json().catch(() => ({}));
-            showToast(err.detail || "Tagging would create a schedule conflict", true);
-        } else {
-            showToast("Tag update failed", true);
-        }
-    };
+    return sel ? sel.value : (_deviceTagState().deviceGroup[deviceId] || "");
 }
+
+async function _putDeviceTags(deviceId, tagIds) {
+    const resp = await apiCall("PUT", `/api/devices/${deviceId}/tags`, { tag_ids: tagIds });
+    if (resp && resp.ok) {
+        const data = await resp.json();
+        TagPicker.render("device", deviceId, data.tags || []);
+        showToast("Tags updated");
+        return true;
+    }
+    if (resp && resp.status === 409) {
+        // The tag set would place this device under two equal-priority
+        // schedules that overlap in time.
+        const err = await resp.json().catch(() => ({}));
+        showToast(err.detail || "Tagging would create a schedule conflict", true);
+    } else {
+        showToast("Tag update failed", true);
+    }
+    return false;
+}
+
+TagPicker.register("device", {
+    listTags(deviceId) {
+        const groupId = _deviceGroupId(deviceId);
+        if (!groupId) return "Assign the device to a group before tagging it";
+        const available = (_deviceTagState().groupTags || {})[groupId] || [];
+        if (!available.length) {
+            return "This group has no tags yet - create one from the group header";
+        }
+        return available;
+    },
+    add(deviceId, tagId) {
+        const ids = Array.from(TagPicker.appliedIds("device", deviceId));
+        if (!ids.includes(String(tagId))) ids.push(String(tagId));
+        return _putDeviceTags(deviceId, ids);
+    },
+    remove(deviceId, tagId) {
+        const ids = Array.from(TagPicker.appliedIds("device", deviceId))
+            .filter(x => x !== String(tagId));
+        return _putDeviceTags(deviceId, ids);
+    },
+});
 
 async function openGroupTagManager(groupId, groupName) {
     const resp = await apiCall("GET", `/api/groups/${groupId}/tags`);

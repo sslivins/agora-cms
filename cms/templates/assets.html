@@ -351,17 +351,11 @@
     </div>
     {% endif %}
 
-    {# ── Shared per-row "+ tag" picker (one popup, positioned per click) ── #}
-    {% if all_tags | length > 0 and 'assets:write' in user_perms %}
-    <div id="row-add-tag-popup" popover class="group-popup">
-        {% for t in all_tags %}
-        <button type="button" class="group-popup-item" data-tag-id="{{ t.id }}"
-                onclick="window._assetLibrary && window._assetLibrary.addTagToCurrentRow('{{ t.id }}')">
-            <span style="display:inline-block; width:0.7rem; height:0.7rem; background:{{ t.color }}; border-radius:50%; margin-right:0.4rem; vertical-align:middle;"></span>{{ t.name }}
-        </button>
-        {% endfor %}
-    </div>
-    {% endif %}
+    {# The per-row "+ tag" picker is built client-side by TagPicker (see the
+       'asset' scope registration below); it only needs the tag list. #}
+    <script>
+        window._allAssetTags = {{ all_tags | tojson }};
+    </script>
 
     <div class="table-wrap" id="assets-table-wrap">
     <table>
@@ -1382,14 +1376,15 @@ function fallbackCopy(text, onSuccess) {
         const name = a.display_name || a.original_filename || a.filename;
         const tags = Array.isArray(a.tags) ? a.tags : [];
         const tagChipsHtml = tags.length
-            ? '<div class="asset-grid-tags" style="margin-top:0.25rem; display:flex; flex-wrap:wrap; gap:0.2rem;">' +
+            ? '<div class="asset-grid-tags tag-chips tag-chips-block">' +
                 tags.map(t => {
                     const bg = t.color || '#737373';
                     const fg = _contrastTextColor(bg);
                     return '<span class="tag-chip" data-tag-id="' + _escHtml(t.id) + '" ' +
-                        'onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag(\'' + _escHtml(t.id) + '\')" ' +
-                        'style="font-size:0.65rem; padding:0.05rem 0.4rem; border-radius:999px; background:' + _escHtml(bg) + '; color:' + fg + '; cursor:pointer;" ' +
-                        'title="Filter by ' + _escHtml(t.name) + '">' + _escHtml(t.name) + '</span>';
+                        'style="font-size:0.65rem; background:' + _escHtml(bg) + '; color:' + fg + ';">' +
+                        '<span class="tag-chip-label" data-clickable ' +
+                        'onclick="event.stopPropagation(); TagPicker.labelClick(\'asset\', \'' + _escHtml(t.id) + '\')" ' +
+                        'title="Filter by ' + _escHtml(t.name) + '">' + _escHtml(t.name) + '</span></span>';
                 }).join('') +
               '</div>'
             : '';
@@ -2031,95 +2026,10 @@ function fallbackCopy(text, onSuccess) {
             _runBulk('remove_tag', { tag_id: tagId });
         },
         removeTagFromAsset: async (assetId, tagId) => {
-            try {
-                const resp = await fetch('/api/assets/bulk', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ asset_ids: [assetId], action: 'remove_tag', tag_id: tagId }),
-                });
-                const data = await resp.json();
-                if (!resp.ok) {
-                    if (window.showToast) window.showToast(data.detail || 'Remove tag failed', true);
-                    return;
-                }
-                if (window.showToast) window.showToast('Tag removed', false);
-                await reload();
-            } catch (e) {
-                if (window.showToast) window.showToast('Remove tag error: ' + e.message, true);
-            }
+            return _assetTagBulk(assetId, 'remove_tag', tagId, 'Tag removed', 'Remove tag');
         },
-        openRowAddTagPicker: (assetId, ev) => {
-            const pop = document.getElementById('row-add-tag-popup');
-            if (!pop) return;
-            state._rowAddTagAssetId = assetId;
-            // Hide tags already applied to this asset.
-            let appliedIds = new Set();
-            const row = tbody.querySelector('tr.asset-row[data-asset-id="' + assetId + '"]');
-            if (row && row.dataset.tags) {
-                try {
-                    const parsed = JSON.parse(row.dataset.tags);
-                    parsed.forEach(t => appliedIds.add(t.id));
-                } catch (e) { /* ignore */ }
-            }
-            let visibleCount = 0;
-            pop.querySelectorAll('[data-tag-id]').forEach(btn => {
-                if (appliedIds.has(btn.dataset.tagId)) {
-                    btn.style.display = 'none';
-                } else {
-                    btn.style.display = '';
-                    visibleCount++;
-                }
-            });
-            // Toggle the "all applied" hint.
-            let hint = pop.querySelector('.row-add-tag-empty');
-            if (visibleCount === 0) {
-                if (!hint) {
-                    hint = document.createElement('div');
-                    hint.className = 'row-add-tag-empty text-muted';
-                    hint.style.cssText = 'padding:0.4rem 0.75rem; font-size:0.8rem;';
-                    hint.textContent = 'All tags already applied';
-                    pop.appendChild(hint);
-                }
-                hint.style.display = '';
-            } else if (hint) {
-                hint.style.display = 'none';
-            }
-            // Open first so the top-layer popover has a measurable size, then
-            // anchor it to the clicked "+ tag" button using the shared,
-            // viewport-aware positioner (handles below/above flip + horizontal
-            // clamp). The old manual math added window.scrollY/scrollX, which
-            // pushed a top-layer (fixed) popover off-screen on a scrolled page.
-            const target = (ev && ev.currentTarget) || (ev && ev.target);
-            try { pop.showPopover(); } catch (e) {}
-            if (target && typeof positionPopover === 'function') {
-                positionPopover(pop, { placement: 'below', align: 'left', anchor: target });
-            }
-        },
-        addTagToCurrentRow: async (tagId) => {
-            const pop = document.getElementById('row-add-tag-popup');
-            if (pop && pop.hidePopover) try { pop.hidePopover(); } catch (e) {}
-            const assetId = state._rowAddTagAssetId;
-            if (!assetId) return;
-            try {
-                const resp = await fetch('/api/assets/bulk', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ asset_ids: [assetId], action: 'add_tag', tag_id: tagId }),
-                });
-                const data = await resp.json();
-                if (!resp.ok) {
-                    if (window.showToast) window.showToast(data.detail || 'Add tag failed', true);
-                    return;
-                }
-                if (data.failed && data.failed.length) {
-                    if (window.showToast) window.showToast('Add tag failed for asset', true);
-                    return;
-                }
-                if (window.showToast) window.showToast('Tag added', false);
-                await reload();
-            } catch (e) {
-                if (window.showToast) window.showToast('Add tag error: ' + e.message, true);
-            }
+        addTagToAsset: async (assetId, tagId) => {
+            return _assetTagBulk(assetId, 'add_tag', tagId, 'Tag added', 'Add tag');
         },
         filterByTag: (tagId) => {
             state.tag_id = tagId || '';
@@ -2208,6 +2118,40 @@ function fallbackCopy(text, onSuccess) {
         },
         refreshTagManager: () => _refreshTagManager(),
     };
+
+    // The per-row "+ tag" picker and the chips themselves are the shared
+    // TagPicker component (see app.js); this scope supplies the asset flavour.
+    TagPicker.register('asset', {
+        listTags: () => window._allAssetTags || [],
+        add: (assetId, tagId) => _assetTagBulk(assetId, 'add_tag', tagId, 'Tag added', 'Add tag'),
+        remove: (assetId, tagId) => _assetTagBulk(assetId, 'remove_tag', tagId, 'Tag removed', 'Remove tag'),
+        labelClick: (tagId) => window._assetLibrary.filterByTag(tagId),
+    });
+
+    // Single-asset tag add/remove both go through the bulk endpoint, which is
+    // the only write path that understands tag assignment.
+    async function _assetTagBulk(assetId, action, tagId, okMsg, label) {
+        try {
+            const resp = await fetch('/api/assets/bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ asset_ids: [assetId], action, tag_id: tagId }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                if (window.showToast) window.showToast(data.detail || (label + ' failed'), true);
+                return;
+            }
+            if (data.failed && data.failed.length) {
+                if (window.showToast) window.showToast(label + ' failed for asset', true);
+                return;
+            }
+            if (window.showToast) window.showToast(okMsg, false);
+            await reload();
+        } catch (e) {
+            if (window.showToast) window.showToast(label + ' error: ' + e.message, true);
+        }
+    }
 
     async function _refreshTagManager() {
         const list = document.getElementById('tag-manager-list');

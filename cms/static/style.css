@@ -1199,6 +1199,59 @@ tr.highlight-new td {
 .group-popup[popover]:popover-open { display: flex; }
 .group-popup-item { background: none; border: none; color: var(--text); cursor: pointer; padding: 0.4rem 0.75rem; text-align: left; font-size: 0.85rem; white-space: nowrap; }
 .group-popup-item:hover { background: var(--primary); color: var(--text-on-accent); }
+
+/* ── Shared tag chips + "+ tag" picker ──────────────────────────────────
+   Used by both asset tags (global, /api/tags) and device tags (group
+   scoped, /api/groups/{id}/tags). The markup comes from the tag_chips()
+   macro in _macros.html and is driven by TagPicker in app.js; only the
+   chip background/foreground is inline, because it is per-tag data. */
+.tag-chips { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; vertical-align: middle; }
+.tag-chips-inline { margin-left: 0.35rem; }
+.tag-chips-block { display: flex; margin-top: 0.35rem; }
+.tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+}
+/* A chip carrying a remove button needs less padding on that side so the
+   circular × sits flush inside the pill. */
+.tag-chip:has(.tag-chip-remove) { padding-right: 0.1rem; }
+.tag-chip-label[data-clickable] { cursor: pointer; }
+.tag-chip-remove {
+    background: rgba(0, 0, 0, 0.25);
+    color: inherit;
+    border: none;
+    border-radius: 50%;
+    width: 1rem;
+    height: 1rem;
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.tag-chip-remove:hover { background: rgba(0, 0, 0, 0.45); }
+.tag-add-btn {
+    background: transparent;
+    color: var(--text-muted, #999);
+    border: 1px dashed var(--overlay-strong);
+    border-radius: 999px;
+    font-size: 0.7rem;
+    line-height: 1.4;
+    padding: 0.02rem 0.4rem;
+    cursor: pointer;
+    vertical-align: middle;
+}
+.tag-add-btn:hover { color: var(--text); border-color: var(--text-muted, #999); }
+.tag-picker-empty { padding: 0.4rem 0.75rem; font-size: 0.8rem; white-space: nowrap; }
+.tag-picker-swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+
 .detail-toolbar { padding: 0.75rem 0 0; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.75rem; }
 
 /* Group panels */

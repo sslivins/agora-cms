@@ -1,6 +1,41 @@
 {# Shared template macros. Import with: {% import '_macros.html' as macros %} #}
 
 {#
+  Shared tag chips + "+ tag" picker.
+
+  One presentation for every kind of tag in the CMS. `scope` names a handler
+  set registered with TagPicker.register() in JS (currently "asset" — global
+  tags from /api/tags — and "device" — group-scoped tags from
+  /api/groups/{id}/tags), and `owner_id` is the row the tags hang off. The
+  picker popup itself is built lazily by TagPicker, so a scope whose tag list
+  varies per row (device tags depend on the device's group) works without any
+  server-rendered popup markup.
+
+  Usage:
+      {{ macros.tag_chips('asset', a.id, asset_tags,
+                          'assets:write' in user_perms,
+                          clickable=true, extra_class='tag-chips-inline') }}
+#}
+{% macro tag_chips(scope, owner_id, tags, can_write, clickable=false, extra_class='') -%}
+<span class="tag-chips {{ extra_class }}" data-tag-scope="{{ scope }}" data-tag-owner="{{ owner_id }}">
+    {% for t in tags %}
+    {% set _tc = t.color | contrast_text_color %}
+    <span class="tag-chip" data-tag-id="{{ t.id }}" style="background:{{ t.color }}; color:{{ _tc }};">
+        <span class="tag-chip-label"{% if clickable %} data-clickable title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); TagPicker.labelClick('{{ scope }}', '{{ t.id }}')"{% endif %}>{{ t.name }}</span>
+        {% if can_write %}
+        <button type="button" class="tag-chip-remove" title="Remove tag {{ t.name }}"
+                onclick="event.stopPropagation(); TagPicker.remove('{{ scope }}', '{{ owner_id }}', '{{ t.id }}')">&times;</button>
+        {% endif %}
+    </span>
+    {% endfor %}
+    {% if can_write %}
+    <button type="button" class="tag-add-btn" data-tag-add="{{ owner_id }}" title="Add tag"
+            onclick="event.stopPropagation(); TagPicker.open('{{ scope }}', '{{ owner_id }}', event)">+ tag</button>
+    {% endif %}
+</span>
+{%- endmacro %}
+
+{#
   Kebab (⋮) action menu. Uses the native HTML popover API so the menu
   renders in the browser's top-layer and cannot be clipped by any parent's
   overflow/transform/stacking context. Light-dismiss (outside click +
@@ -167,24 +202,9 @@
                         <span class="tooltip">{% for _line in _u_tooltip_lines %}<div>{{ _line }}</div>{% endfor %}</span>
                     </span>
                     {% endif %}
-                    {% if asset_tags %}
-                    <span class="asset-tag-chips" data-asset-id="{{ a.id }}" style="display:inline-flex; flex-wrap:wrap; gap:0.25rem; margin-left:0.35rem; vertical-align:middle;">
-                        {% for t in asset_tags %}
-                        {% set _tc = t.color | contrast_text_color %}
-                        <span class="asset-tag-chip" data-tag-id="{{ t.id }}" style="background:{{ t.color }}; color:{{ _tc }}; font-size:0.72rem; padding:0.05rem 0.1rem 0.05rem 0.45rem; border-radius:999px; line-height:1.4; display:inline-flex; align-items:center; gap:0.15rem;">
-                            <span title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag('{{ t.id }}')" style="cursor:pointer;">{{ t.name }}</span>
-                            {% if 'assets:write' in user_perms %}
-                            <button type="button" title="Remove tag" onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.removeTagFromAsset('{{ a.id }}', '{{ t.id }}')" style="background:rgba(0,0,0,0.25); color:{{ _tc }}; border:none; border-radius:50%; width:1rem; height:1rem; font-size:0.7rem; line-height:1; padding:0; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">&times;</button>
-                            {% endif %}
-                        </span>
-                        {% endfor %}
-                    </span>
-                    {% endif %}
-                    {% if 'assets:write' in user_perms %}
-                    <button type="button" class="asset-add-tag-btn" data-asset-id="{{ a.id }}"
-                            onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.openRowAddTagPicker('{{ a.id }}', event)"
-                            title="Add tag"
-                            style="margin-left:0.35rem; background:transparent; color:var(--text-muted, #999); border:1px dashed var(--overlay-strong); font-size:0.7rem; padding:0.02rem 0.4rem; border-radius:999px; cursor:pointer; line-height:1.4; vertical-align:middle;">+ tag</button>
+                    {% if asset_tags or 'assets:write' in user_perms %}
+                    {{ tag_chips('asset', a.id, asset_tags, 'assets:write' in user_perms,
+                                 clickable=true, extra_class='tag-chips-inline') }}
                     {% endif %}
                     {% if a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
                     <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>
@@ -730,16 +750,10 @@
         {{ (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '-' }}
         {% endif %}
         {% set _dtags = (device_tags | default({}, true)).get(d.id | string, []) %}
-        <div class="device-tag-chips" data-device-tags="{{ d.id }}">
-            {% for tg in _dtags %}
-            <span class="badge device-tag-chip" data-tag-id="{{ tg.id }}" style="background:{{ tg.color }};color:#fff">{{ tg.name }}</span>
-            {% endfor %}
-            {% if 'devices:write' in user_perms %}
-            <button type="button" class="btn-link device-tag-edit" data-device-tag-edit="{{ d.id }}"
-                    onclick="event.stopPropagation(); openDeviceTagEditor('{{ d.id }}')"
-                    title="Edit tags">&#9998;</button>
-            {% endif %}
-        </div>
+        {% if _dtags or 'devices:write' in user_perms %}
+        {{ tag_chips('device', d.id, _dtags, 'devices:write' in user_perms,
+                     extra_class='tag-chips-block') }}
+        {% endif %}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
