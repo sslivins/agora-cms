@@ -48,13 +48,17 @@ def _make_tag(api, group_id, name, color="#3366cc"):
 
 
 def _an_asset(api, filename):
-    assets = api.get("/api/assets").json()
-    if not assets:
-        api.create_asset(filename)
-        assets = api.get("/api/assets").json()
-        if not assets:
-            pytest.skip("Could not create test asset")
-    return assets[0]["id"]
+    """Create a READY asset and return its id.
+
+    Reusing ``GET /api/assets`` and taking the first row is unreliable: other
+    tests upload assets that stay PENDING (the e2e server has no transcoder),
+    and the readiness gate rejects those with a 422 on POST /api/schedules.
+    ``create_asset`` marks every variant READY, so always mint a fresh one.
+    """
+    resp = api.create_asset(filename)
+    if resp.status_code != 201:
+        pytest.skip(f"Could not create test asset ({resp.status_code})")
+    return resp.json()["id"]
 
 
 def _open_tag_manager(page: Page, group_id: str):
