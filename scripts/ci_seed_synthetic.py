@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import text
 
@@ -296,6 +296,35 @@ async def seed(count: int = 10) -> None:
                     "created_at": now,
                 })
 
+        # device_tags (group-scoped labels) + their assignments
+        tag_ids = []
+        for i in range(count):
+            tid = uuid.uuid4()
+            gid = group_ids[i % len(group_ids)] if group_ids else None
+            if gid is None:
+                break
+            tag_ids.append((tid, gid))
+            await _insert(conn, "device_tags", {
+                "id": tid,
+                "group_id": gid,
+                "name": f"seed_tag_{i}",
+                "color": "#4a90d9",
+                "created_at": now,
+            })
+
+        # Only tag a device when it shares the tag's group -- the service layer
+        # enforces that invariant, so seeding a violation would be misleading.
+        for i, (tid, gid) in enumerate(tag_ids):
+            did = device_ids[i % len(device_ids)] if device_ids else None
+            if did is None:
+                break
+            await _insert(conn, "device_tag_assignments", {
+                "id": uuid.uuid4(),
+                "device_id": did,
+                "tag_id": tid,
+                "created_at": now,
+            })
+
         # schedules
         for i in range(count):
             await _insert(conn, "schedules", {
@@ -303,8 +332,8 @@ async def seed(count: int = 10) -> None:
                 "name": f"seed_schedule_{i}",
                 "asset_id": asset_ids[i % len(asset_ids)],
                 "group_id": group_ids[i % len(group_ids)] if group_ids else None,
-                "start_time": "08:00:00",
-                "end_time": "18:00:00",
+                "start_time": time(8, 0),
+                "end_time": time(18, 0),
                 "priority": 0,
                 "enabled": True,
                 "created_at": now,
