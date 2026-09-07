@@ -77,9 +77,17 @@ def expand_group_panel(group_panel, timeout: int = 5000):
     fully wired, leaving the body still hidden. Retry until the
     ``expanded`` class is present, then return the body locator.
     """
-    panel_handle = group_panel.element_handle()
-    if panel_handle and "expanded" in (panel_handle.get_attribute("class") or ""):
-        return group_panel.locator(".group-body")
+    # Fast path: already expanded. Guarded, because a caller can reach here
+    # while a location.reload() kicked off by a previous action is still in
+    # flight, and touching a handle from the outgoing document raises
+    # "Execution context was destroyed". Fall through to the retry loop,
+    # which re-resolves the locator against the new document.
+    try:
+        panel_handle = group_panel.element_handle(timeout=2000)
+        if panel_handle and "expanded" in (panel_handle.get_attribute("class") or ""):
+            return group_panel.locator(".group-body")
+    except Exception:
+        pass
 
     # Click the expand-toggle arrow specifically — clicking the .group-header
     # itself can land on inner spans (the name, kebab, splash dropdown) that
@@ -89,6 +97,11 @@ def expand_group_panel(group_panel, timeout: int = 5000):
     last_err = None
     for _ in range(attempts):
         try:
+            # Re-check per attempt with the locator (not a stale handle) so a
+            # panel that expanded in the meantime isn't clicked shut again.
+            cls = group_panel.get_attribute("class", timeout=2000) or ""
+            if re.search(r"(^|\s)expanded(\s|$)", cls):
+                return group_panel.locator(".group-body")
             group_panel.locator(".group-header .expand-toggle").click(timeout=2000)
             expect(group_panel).to_have_class(
                 re.compile(r"(^|\s)expanded(\s|$)"),
