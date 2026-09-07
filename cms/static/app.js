@@ -524,10 +524,71 @@ function _refreshUngroupedSection() {
 // Sync every inline group <select> for this device (both the main "All Devices"
 // row and the compact row) so their values match the new group after a change
 // originating from any of them or from drag-and-drop.
-function _syncDeviceGroupSelects(deviceId, groupId) {
+// Group membership is shown as plain text once a device is in a group: the
+// only way out is the row's "Remove from group" action, which is deliberate
+// because leaving a group discards the device's group-scoped tags. Ungrouped
+// devices still get a <select> so they can be assigned.
+function _groupNameFor(groupId) {
+    if (!groupId) return "";
+    const panel = document.querySelector(`.group-panel[data-group-id="${groupId}"]`);
+    if (panel) {
+        const named = panel.querySelector('.editable-name[data-field="name"]')
+            || panel.querySelector(".group-header strong");
+        if (named) return named.textContent.trim();
+    }
+    const known = (window._adoptionGroups || []).find(g => String(g.id) === String(groupId));
+    return known ? known.name : "";
+}
+
+function _groupChoices() {
+    const panels = Array.from(document.querySelectorAll(".group-panel[data-group-id]"));
+    if (panels.length) {
+        return panels.map(p => ({
+            id: p.dataset.groupId,
+            name: _groupNameFor(p.dataset.groupId),
+        }));
+    }
+    return (window._adoptionGroups || []).map(g => ({ id: String(g.id), name: g.name }));
+}
+
+function _deviceGroupCellId(deviceId) {
+    const cell = document.querySelector(
+        `tr[data-device-id="${deviceId}"] [data-device-group-cell]`);
+    return cell ? (cell.dataset.deviceGroupCell || "") : "";
+}
+
+function _syncDeviceGroupCells(deviceId, groupId) {
     document.querySelectorAll(
-        `tr.device-row[data-device-id="${deviceId}"] select[data-device-group-select]`
-    ).forEach(sel => { sel.value = groupId || ''; });
+        `tr.device-row[data-device-id="${deviceId}"] [data-device-group-cell]`
+    ).forEach(cell => {
+        cell.dataset.deviceGroupCell = groupId || "";
+        if (groupId) {
+            const label = document.createElement("span");
+            label.setAttribute("data-device-group-name", "");
+            label.title = "Use the row menu to remove this device from its group";
+            label.textContent = _groupNameFor(groupId) || "\u2014";
+            cell.replaceChildren(label);
+            return;
+        }
+        // Back to ungrouped — rebuild the picker so it can be assigned again.
+        const sel = document.createElement("select");
+        sel.className = "inline-edit";
+        sel.setAttribute("data-device-group-select", "");
+        sel.onclick = (ev) => ev.stopPropagation();
+        sel.onchange = () => assignGroup(deviceId, sel.value);
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "None";
+        sel.appendChild(none);
+        _groupChoices().forEach(g => {
+            const opt = document.createElement("option");
+            opt.value = g.id;
+            opt.textContent = g.name;
+            sel.appendChild(opt);
+        });
+        sel.value = "";
+        cell.replaceChildren(sel);
+    });
 }
 
 // Move a device's compact row to its new group's tbody (or ungrouped).
@@ -587,20 +648,34 @@ function moveDeviceRowInDom(deviceId, newGroupId) {
     _refreshGroupEmptyState(fromKey);
     _refreshGroupEmptyState(toKey);
     _refreshUngroupedSection();
-    _syncDeviceGroupSelects(deviceId, newGroupId);
+    _syncDeviceGroupCells(deviceId, newGroupId);
     return true;
 }
 
 async function assignGroup(deviceId, groupId) {
+    // Leaving a group destroys the device's group-scoped tags, so make the
+    // operator acknowledge exactly what is lost. No prompt when there's
+    // nothing to lose — the common case shouldn't nag.
+    const doomed = TagPicker.tagNames("device", deviceId);
+    if (doomed.length) {
+        const previous = _deviceGroupCellId(deviceId);
+        const ok = await showConfirm(
+            `This device will lose ${doomed.length > 1 ? "its tags" : "its tag"} ` +
+            `(${doomed.join(", ")}), because tags belong to the group they were ` +
+            `created in. Continue?`);
+        if (!ok) {
+            _syncDeviceGroupCells(deviceId, previous);
+            return;
+        }
+    }
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { group_id: groupId || null });
     if (!resp || !resp.ok) {
         showToast("Group update failed", true);
         return;
     }
-    // Tags belong to the group they were created in, so moving a device out
-    // always strips them. The server has already dropped them; mirror that in
-    // the DOM and tell the operator what was lost.
-    const dropped = TagPicker.tagNames("device", deviceId);
+    // The server has already dropped the tags; mirror that in the DOM and tell
+    // the operator what went.
+    const dropped = doomed;
     TagPicker.render("device", deviceId, []);
     const msg = dropped.length
         ? `Group updated — removed tag${dropped.length > 1 ? "s" : ""}: ${dropped.join(", ")}`
@@ -746,7 +821,7 @@ function _deleteGroupFromDom(groupId) {
             const actionsCell = row.querySelector('td.actions');
             if (actionsCell) actionsCell.innerHTML = '';
             ungroupedTbody.appendChild(row);
-            if (deviceId) _syncDeviceGroupSelects(deviceId, null);
+            if (deviceId) _syncDeviceGroupCells(deviceId, null);
         });
     }
     panel.remove();
@@ -3448,9 +3523,16 @@ function _deviceTagState() {
 }
 
 function _deviceGroupId(deviceId) {
-    const sel = document.querySelector(
-        `tr[data-device-id="${deviceId}"] select[data-device-group-select]`);
-    return sel ? sel.value : (_deviceTagState().deviceGroup[deviceId] || "");
+    const cell = document.querySelector(
+        `tr[data-device-id="${deviceId}"] [data-device-group-cell]`);
+    if (cell) {
+        // Ungrouped rows still carry a picker; grouped rows carry the id on
+        // the cell itself, since the group is rendered as plain text.
+        const sel = cell.querySelector("select[data-device-group-select]");
+        if (sel) return sel.value;
+        return cell.dataset.deviceGroupCell || "";
+    }
+    return _deviceTagState().deviceGroup[deviceId] || "";
 }
 
 async function _putDeviceTags(deviceId, tagIds) {

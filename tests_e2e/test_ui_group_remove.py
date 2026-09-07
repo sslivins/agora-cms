@@ -3,7 +3,7 @@
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async, expand_group_panel
+from tests_e2e.conftest import run_async, expand_group_panel, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -84,7 +84,7 @@ class TestGroupRemoveButtons:
         expect(group_body).to_be_visible(timeout=3000)
         device_row = group_body.locator('tr[data-device-id="grp-rm-003"]').first
         expect(device_row).to_be_visible(timeout=3000)
-        device_row.locator("select[data-device-group-select]").select_option("")
+        click_row_action(device_row, "Remove from group")
         page.wait_for_load_state("domcontentloaded")
 
         # The group should still exist
@@ -231,7 +231,7 @@ class TestGroupMembershipTransitions:
         expand_group_panel(group_panel)
         device_row = group_panel.locator('tr[data-device-id="inplace-001"]').first
         expect(device_row).to_be_visible(timeout=3000)
-        device_row.locator("select[data-device-group-select]").select_option("")
+        click_row_action(device_row, "Remove from group")
         page.wait_for_load_state("domcontentloaded")
 
         # Row should appear in the ungrouped tbody and disappear from the group tbody.
@@ -282,4 +282,6 @@ class TestGroupMembershipTransitions:
         expect(page.locator(f'[data-group-count="{group_id}"]')).to_have_text("2 devices")
 
         moved_row = group_tbody.locator('tr[data-device-id="inplace-002"]').first
-        expect(moved_row.locator("select[data-device-group-select]")).to_have_value(group_id)
+        expect(moved_row.locator("[data-device-group-cell]")).to_have_attribute(
+            "data-device-group-cell", group_id)
+        expect(moved_row.locator("select[data-device-group-select]")).to_have_count(0)

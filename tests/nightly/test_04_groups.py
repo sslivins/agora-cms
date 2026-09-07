@@ -285,8 +285,11 @@ def test_devices_page_moves_row_in_place_on_group_change(
         count_badge = page.locator(f'[data-group-count="{group_id}"]')
         assert count_badge.inner_text().lower().startswith("1 device"), count_badge.inner_text()
 
-        # The moved row's selector should reflect the new group.
-        assert group_row.locator("select[data-device-group-select]").input_value() == group_id
+        # The moved row shows its group as plain text carrying the id; the
+        # selector is gone, because leaving a group is a deliberate action.
+        assert group_row.locator("[data-device-group-cell]").get_attribute(
+            "data-device-group-cell") == group_id
+        assert group_row.locator("select[data-device-group-select]").count() == 0
 
         # Expand the group panel so the row is visible/interactive. Group
         # panels start collapsed; the table lives in the hidden panel body.
@@ -294,8 +297,10 @@ def test_devices_page_moves_row_in_place_on_group_change(
         if not group_panel.evaluate("el => el.classList.contains('expanded')"):
             group_panel.locator(".group-header").click()
 
-        # Step 2: select None - the row should move back to Ungrouped.
-        group_row.locator("select[data-device-group-select]").select_option("")
+        # Step 2: "Remove from group" - the row should move back to Ungrouped.
+        group_row.locator(".btn-kebab").click()
+        page.locator(".kebab-menu:popover-open").get_by_role(
+            "menuitem", name="Remove from group").click()
         page.wait_for_load_state("domcontentloaded")
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
