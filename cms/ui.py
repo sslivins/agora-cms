@@ -149,6 +149,7 @@ def schedule_json(s):
         "name": s.name,
         "asset_id": str(s.asset_id),
         "group_id": str(s.group_id) if s.group_id else None,
+        "tag_id": str(s.tag_id) if s.tag_id else None,
         "start_time": s.start_time.strftime("%H:%M"),
         "end_time": s.end_time.strftime("%H:%M"),
         "start_date": s.start_date.strftime("%Y-%m-%d") if s.start_date else "",
@@ -1058,6 +1059,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         .options(
             selectinload(Schedule.asset),
             selectinload(Schedule.group),
+            selectinload(Schedule.tag),
         )
         .where(Schedule.enabled == True)
     )
@@ -1282,6 +1284,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         .options(
             selectinload(Schedule.asset),
             selectinload(Schedule.group),
+            selectinload(Schedule.tag),
         )
         .where(Schedule.enabled == True)
     )
@@ -2341,6 +2344,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         .options(
             selectinload(Schedule.asset),
             selectinload(Schedule.group),
+            selectinload(Schedule.tag),
         )
         .order_by(Schedule.priority.desc(), Schedule.name)
     )
