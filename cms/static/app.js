@@ -202,6 +202,32 @@ function showToast(message, variant) {
     setTimeout(() => el.remove(), lifetimeMs);
 }
 
+// Queue a toast that must survive a full page reload. Used by flows that fall
+// back to location.reload() -- without this the message is created and then
+// immediately destroyed by the navigation, so the operator never sees it.
+const _PENDING_TOAST_KEY = "cw:pendingToast";
+
+function showToastAfterReload(message, variant) {
+    try {
+        sessionStorage.setItem(_PENDING_TOAST_KEY, JSON.stringify({ message, variant }));
+    } catch (e) { /* storage unavailable -- message is best-effort */ }
+}
+
+function _flushPendingToast() {
+    let raw = null;
+    try {
+        raw = sessionStorage.getItem(_PENDING_TOAST_KEY);
+        if (raw) sessionStorage.removeItem(_PENDING_TOAST_KEY);
+    } catch (e) { return; }
+    if (!raw) return;
+    try {
+        const { message, variant } = JSON.parse(raw);
+        if (message) showToast(message, variant);
+    } catch (e) { /* malformed entry -- drop it */ }
+}
+
+document.addEventListener("DOMContentLoaded", _flushPendingToast);
+
 function extractErrorMsg(err, fallback) {
     if (!err) return fallback || "Unknown error";
     const d = err.detail;
@@ -579,13 +605,16 @@ async function assignGroup(deviceId, groupId) {
         ? Array.from(chipBox.querySelectorAll(".device-tag-chip")).map(c => c.textContent.trim())
         : [];
     if (chipBox) chipBox.querySelectorAll(".device-tag-chip").forEach(c => c.remove());
-    showToast(dropped.length
+    const msg = dropped.length
         ? `Group updated — removed tag${dropped.length > 1 ? "s" : ""}: ${dropped.join(", ")}`
-        : "Group updated");
+        : "Group updated";
+    showToast(msg);
     if (!moveDeviceRowInDom(deviceId, groupId)) {
-        // Could not update DOM in place (e.g., destination tbody missing for a
-        // freshly-created group); fall back to a refresh so the user still sees
-        // the correct state.
+        // Could not update DOM in place (e.g., the row lives in a group panel,
+        // which renders full rows rather than the compact ones the in-place
+        // mover understands); fall back to a refresh so the user still sees the
+        // correct state. Re-queue the toast so the reload doesn't swallow it.
+        showToastAfterReload(msg);
         location.reload();
     }
 }
