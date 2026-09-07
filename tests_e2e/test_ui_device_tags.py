@@ -61,6 +61,24 @@ def _an_asset(api, filename):
     return resp.json()["id"]
 
 
+def _tag_box(page: Page, device_id: str):
+    """The shared tag_chips() container for one device row."""
+    return page.locator(
+        f'.tag-chips[data-tag-scope="device"][data-tag-owner="{device_id}"]')
+
+
+def _chips(page: Page, device_id: str):
+    return _tag_box(page, device_id).locator(".tag-chip")
+
+
+def _pick_tag(page: Page, device_id: str, tag_name: str):
+    """Open the shared "+ tag" picker on a device row and choose a tag."""
+    _tag_box(page, device_id).locator(".tag-add-btn").click()
+    popup = page.locator("#tag-picker-popup")
+    expect(popup).to_be_visible(timeout=3000)
+    popup.get_by_role("button", name=tag_name).click()
+
+
 def _open_tag_manager(page: Page, group_id: str):
     panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
     expect(panel).to_be_visible(timeout=5000)
@@ -159,32 +177,47 @@ class TestDeviceTagAssignment:
         panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
         expand_group_panel(panel)
 
-        chips = page.locator('[data-device-tags="tag-dev-001"] .device-tag-chip')
+        chips = _chips(page, "tag-dev-001")
         expect(chips).to_have_count(0)
 
-        page.locator('[data-device-tag-edit="tag-dev-001"]').click()
-        editor = page.locator(".modal-overlay")
-        expect(editor).to_be_visible(timeout=3000)
-        editor.locator("#device-tag-options input[type=checkbox]").first.check()
-        editor.locator("[data-tag-save]").click()
+        _pick_tag(page, "tag-dev-001", "Morning")
 
         expect(chips).to_have_count(1, timeout=5000)
-        expect(chips.first).to_have_text("Morning")
+        expect(chips.first).to_contain_text("Morning")
 
         assigned = api.get("/api/devices/tag-dev-001/tags").json()
         assert [t["name"] for t in assigned["tags"]] == ["Morning"]
 
+    def test_chip_remove_button_untags_device(self, page: Page, api, ws_url, e2e_server):
+        """The inline × on a chip is the only way to shed one tag."""
+        group_id = _make_group(api, "Untag Group")
+        _adopt(api, ws_url, "tag-dev-006", "Untag Device")
+        api.patch("/api/devices/tag-dev-006", json={"group_id": group_id})
+        tag_id = _make_tag(api, group_id, "Evening")
+        api.put("/api/devices/tag-dev-006/tags", json={"tag_ids": [tag_id]})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        expand_group_panel(page.locator(f'div.group-panel[data-group-id="{group_id}"]'))
+
+        chips = _chips(page, "tag-dev-006")
+        expect(chips).to_have_count(1)
+        chips.first.locator(".tag-chip-remove").click()
+
+        expect(chips).to_have_count(0, timeout=5000)
+        assert api.get("/api/devices/tag-dev-006/tags").json()["tags"] == []
+
     def test_editor_refuses_ungrouped_device(self, page: Page, api, ws_url, e2e_server):
-        """A tag has no meaning without an owning group, so the editor declines."""
+        """A tag has no meaning without an owning group, so the picker declines."""
         _adopt(api, ws_url, "tag-dev-002", "Homeless Device")
         api.patch("/api/devices/tag-dev-002", json={"group_id": None})
 
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
-        page.locator('[data-device-tag-edit="tag-dev-002"]').click()
+        _tag_box(page, "tag-dev-002").locator(".tag-add-btn").click()
 
         expect(page.locator(".toast-error")).to_be_visible(timeout=5000)
-        expect(page.locator(".modal-overlay")).to_have_count(0)
+        expect(page.locator("#tag-picker-popup")).to_have_count(0)
 
     def test_group_move_drops_tags_and_says_so(self, page: Page, api, ws_url, e2e_server):
         """Tags belong to the group they were made in; a move strips them."""
@@ -200,7 +233,7 @@ class TestDeviceTagAssignment:
         panel = page.locator(f'div.group-panel[data-group-id="{group_a}"]')
         expand_group_panel(panel)
 
-        chips = page.locator('[data-device-tags="tag-dev-003"] .device-tag-chip')
+        chips = _chips(page, "tag-dev-003")
         expect(chips).to_have_count(1)
 
         row = panel.locator('tr[data-device-id="tag-dev-003"]').first
@@ -281,18 +314,17 @@ class TestTagConflictGate:
         page.wait_for_load_state("domcontentloaded")
         expand_group_panel(page.locator(f'div.group-panel[data-group-id="{group_id}"]'))
 
-        page.locator('[data-device-tag-edit="tag-dev-005"]').click()
-        editor = page.locator(".modal-overlay")
-        expect(editor).to_be_visible(timeout=3000)
-        # Tick both tags — this is the move the server must refuse.
-        for box in editor.locator("#device-tag-options input[type=checkbox]").all():
-            box.check()
-        editor.locator("[data-tag-save]").click()
+        # One tag is fine; the second is the move the server must refuse.
+        _pick_tag(page, "tag-dev-005", "Morning")
+        expect(_chips(page, "tag-dev-005")).to_have_count(1, timeout=5000)
+
+        _pick_tag(page, "tag-dev-005", "Promo")
 
         expect(page.locator(".toast-error")).to_be_visible(timeout=5000)
-        # The modal stays open so the operator can correct the selection.
-        expect(editor).to_be_visible()
-        assert api.get("/api/devices/tag-dev-005/tags").json()["tags"] == []
+        # The rejected tag never lands, in the DOM or on the server.
+        expect(_chips(page, "tag-dev-005")).to_have_count(1)
+        assert [t["name"] for t in api.get(
+            "/api/devices/tag-dev-005/tags").json()["tags"]] == ["Morning"]
 
 
 class TestScheduleTagTargeting:
