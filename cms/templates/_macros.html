@@ -45,6 +45,35 @@
 {%- endmacro %}
 
 {#
+  Device group cell.
+
+  Once a device is in a group the membership renders as plain text: the only
+  way out is the row's "Remove from group" action. Changing group is
+  destructive — group-scoped tags don't travel with the device — so it should
+  not be one careless click away in a column of identical dropdowns. Ungrouped
+  devices still get a picker so they can be assigned.
+
+  The cell keeps the current group id in `data-device-group-cell` so
+  _deviceGroupId() in app.js can read it without a <select> to consult.
+#}
+{% macro device_group_cell(d, groups, user_perms) -%}
+{% set _gname = ((groups | default([]) | selectattr('id', 'equalto', d.group_id)
+                  | map(attribute='name') | list | first) if d.group_id else none) %}
+<span data-device-group-cell="{{ d.group_id or '' }}">
+    {% if 'devices:write' in user_perms and not d.group_id %}
+    <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
+        <option value="">None</option>
+        {% for g in groups %}
+        <option value="{{ g.id }}">{{ g.name }}</option>
+        {% endfor %}
+    </select>
+    {% else %}
+    <span data-device-group-name{% if d.group_id and 'devices:write' in user_perms %} title="Use the row menu to remove this device from its group"{% endif %}>{{ _gname or (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '—' }}</span>
+    {% endif %}
+</span>
+{%- endmacro %}
+
+{#
   Kebab (⋮) action menu. Uses the native HTML popover API so the menu
   renders in the browser's top-layer and cannot be clipped by any parent's
   overflow/transform/stacking context. Light-dismiss (outside click +
@@ -748,16 +777,7 @@
         {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
-        {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
-            <option value="">None</option>
-            {% for g in groups %}
-            <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
-            {% endfor %}
-        </select>
-        {% else %}
-        {{ (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '-' }}
-        {% endif %}
+        {{ device_group_cell(d, groups, user_perms) }}
         {% set _dtags = (device_tags | default({}, true)).get(d.id | string, []) %}
         {% if _dtags or 'devices:write' in user_perms %}
         {{ tag_chips('device', d.id, _dtags, 'devices:write' in user_perms,
@@ -1041,16 +1061,7 @@
         {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
-        {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
-            <option value="">None</option>
-            {% for g in groups %}
-            <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
-            {% endfor %}
-        </select>
-        {% else %}
-        {{ (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '—' }}
-        {% endif %}
+        {{ device_group_cell(d, groups, user_perms) }}
     </td>
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.group_id and 'devices:write' in user_perms %}

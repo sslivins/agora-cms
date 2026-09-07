@@ -128,6 +128,12 @@ class TestDeviceGroupUI:
         expect(row).to_be_visible(timeout=5000)
         # A device belongs to exactly one group, so it appears exactly once.
         expect(page.locator('tr.device-row[data-device-id="grp-ui-001"]')).to_have_count(1)
+
+        # Moving is two deliberate steps: leave the old group, then pick the
+        # new one. A grouped row has no dropdown to slip on.
+        expect(row.locator("select[data-device-group-select]")).to_have_count(0)
+        click_row_action(row, "Remove from group")
+        expect(row.locator("select[data-device-group-select]")).to_have_count(1, timeout=5000)
         row.locator("select[data-device-group-select]").select_option(group_b["id"])
         page.wait_for_load_state("networkidle")
 

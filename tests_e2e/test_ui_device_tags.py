@@ -16,7 +16,7 @@ schedule-write time the two schedules looked disjoint.
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async, expand_group_panel
+from tests_e2e.conftest import run_async, expand_group_panel, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -338,9 +338,9 @@ class TestDeviceTagAssignment:
         expect(page.locator("#tag-picker-popup")).to_have_count(0)
 
     def test_group_move_drops_tags_and_says_so(self, page: Page, api, ws_url, e2e_server):
-        """Tags belong to the group they were made in; a move strips them."""
+        """Tags belong to the group they were made in; leaving strips them,
+        and the operator has to acknowledge that before it happens."""
         group_a = _make_group(api, "Move From Group")
-        group_b = _make_group(api, "Move To Group")
         _adopt(api, ws_url, "tag-dev-003", "Moving Device")
         api.patch("/api/devices/tag-dev-003", json={"group_id": group_a})
         tag_id = _make_tag(api, group_a, "Lobby")
@@ -355,7 +355,14 @@ class TestDeviceTagAssignment:
         expect(chips).to_have_count(1)
 
         row = panel.locator('tr[data-device-id="tag-dev-003"]').first
-        row.locator("select[data-device-group-select]").select_option(group_b)
+        click_row_action(row, "Remove from group")
+
+        # Naming the tags up front is the point — this is the only warning
+        # before they're gone for good.
+        confirm = page.locator(".modal-overlay").last
+        expect(confirm).to_be_visible(timeout=3000)
+        expect(confirm).to_contain_text("Lobby")
+        confirm.locator("button", has_text="Confirm").click()
 
         # Rows inside a group panel can't be moved in place, so the app falls
         # back to a reload; the message must survive it.
@@ -367,6 +374,32 @@ class TestDeviceTagAssignment:
         expect(toast).to_contain_text("Lobby")
 
         assert api.get("/api/devices/tag-dev-003/tags").json()["tags"] == []
+
+    def test_group_move_can_be_cancelled_at_the_confirm(
+        self, page: Page, api, ws_url, e2e_server
+    ):
+        """Backing out of the confirm must leave the device and its tags alone."""
+        group_id = _make_group(api, "Second Thoughts Group")
+        _adopt(api, ws_url, "tag-dev-010", "Cautious Device")
+        api.patch("/api/devices/tag-dev-010", json={"group_id": group_id})
+        api.put("/api/devices/tag-dev-010/tags", json={
+            "tag_ids": [_make_tag(api, group_id, "Keepme")]})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
+        expand_group_panel(panel)
+
+        row = panel.locator('tr[data-device-id="tag-dev-010"]').first
+        click_row_action(row, "Remove from group")
+        confirm = page.locator(".modal-overlay").last
+        expect(confirm).to_be_visible(timeout=3000)
+        confirm.locator("button", has_text="Cancel").click()
+
+        page.wait_for_timeout(500)
+        assert [t["name"].lower() for t in
+                api.get("/api/devices/tag-dev-010/tags").json()["tags"]] == ["keepme"]
+        assert api.get("/api/devices/tag-dev-010").json()["group_id"] == group_id
 
 
 class TestTagConflictGate:
