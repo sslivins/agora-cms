@@ -44,6 +44,9 @@ from tests_e2e.fake_device import FakeDevice
 _LONG_NAME = "Lobby — Marketing Loop (Daily, Wednesdays Excluded)"
 _LONG_ASSET = "Q4-2026-marketing-promo-extended-cut-v3-final-FINAL.mp4"
 _LONG_GROUP = "Building 92 / North Wing / Hallway Display Cluster"
+# Target renders "<group>" over an optional tag pill. Tag names go to 64 chars
+# against a ~11% column, so a long one is the width-stressing case.
+_LONG_TAG = "Seasonal Promotional Content For The Holidays"
 
 
 @pytest.fixture
@@ -95,6 +98,19 @@ def _schedules_seed(api, ws_url):
         group = group_resp.json()
     api.patch(f"/api/devices/{device_id}", json={"group_id": group["id"]})
 
+    # Tag on that group, so the Target cell renders its worst case (group name
+    # *and* a long pill). Reuse an existing one -- tag names are unique within
+    # a group, so a re-run would otherwise 409.
+    existing_tags = api.get(f"/api/groups/{group['id']}/tags").json()
+    tag = next((t for t in existing_tags if t.get("name") == _LONG_TAG), None)
+    if tag is None:
+        tag_resp = api.post(
+            f"/api/groups/{group['id']}/tags",
+            json={"name": _LONG_TAG, "color": "#ff6600"},
+        )
+        assert tag_resp.status_code in (200, 201), tag_resp.text
+        tag = tag_resp.json()
+
     # Asset.  Always create a fresh ready asset rather than reusing
     # ``assets[0]``: prior tests may have left behind assets that the
     # schedules API rejects with HTTP 422 — either webpage assets
@@ -117,6 +133,7 @@ def _schedules_seed(api, ws_url):
     active = api.post("/api/schedules", json={
         "name": _LONG_NAME,
         "group_id": group["id"],
+        "tag_id": tag["id"],
         "asset_id": asset["id"],
         "start_time": "08:00",
         "end_time": "20:00",
@@ -148,6 +165,7 @@ def _schedules_seed(api, ws_url):
     return {
         "device_id": device_id,
         "group_id": group["id"],
+        "tag_id": tag["id"],
         "asset_id": asset["id"],
         "active_id": active_id,
         "expired_id": expired.json()["id"],
@@ -241,6 +259,51 @@ class TestSchedulesLayout:
             page,
             expired_card.locator("table.table-schedules"),
             label=f"@{vw}x{vh} expired",
+        )
+
+    @pytest.mark.parametrize("vw,vh", _VIEWPORTS)
+    def test_target_cell_does_not_spill_into_schedule_column(
+        self, page: Page, _schedules_seed, vw, vh,
+    ):
+        """A long tag name must stay inside the Target cell.
+
+        ``th, td`` are globally ``white-space: nowrap`` and
+        ``.table-schedules .cell-truncate`` sets ``overflow: visible`` so
+        tooltips can escape, which means an untruncated cell paints its
+        overflow straight over the neighbouring Schedule column. The Target
+        cell used to be the only one in the row with no clamp of its own.
+
+        Measured rather than asserted on classes: the whole point is the
+        rendered geometry.
+        """
+        page.set_viewport_size({"width": vw, "height": vh})
+        _goto_schedules(page)
+
+        cell = page.locator(
+            ".card:has-text('Active Schedules') td.schedule-target"
+        ).first
+        expect(cell).to_be_visible()
+        cell_box = cell.bounding_box()
+        assert cell_box is not None
+
+        pill = cell.locator(".target-tag")
+        expect(pill).to_be_visible()
+
+        for label, part in (("tag pill", pill), ("group name", cell.locator(".target-group"))):
+            box = part.bounding_box()
+            assert box is not None, f"{label} has no box"
+            right = box["x"] + box["width"]
+            # 1px of tolerance for sub-pixel layout rounding.
+            assert right <= cell_box["x"] + cell_box["width"] + 1, (
+                f"@{vw}x{vh}: the {label} extends {right - (cell_box['x'] + cell_box['width']):.1f}px "
+                f"past the right edge of the Target cell and overlaps the "
+                f"Schedule column."
+            )
+
+        # Clamping is visual only -- the full name must remain discoverable.
+        assert _LONG_TAG in (pill.get_attribute("title") or ""), (
+            "the tag pill must carry the full tag name in its title so a "
+            "truncated label is still readable on hover"
         )
 
     @pytest.mark.parametrize("vw,vh", _VIEWPORTS)

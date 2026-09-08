@@ -159,6 +159,22 @@
 </tr>
 {%- endmacro %}
 {#
+  Target cell for a schedule row ("<group>" or "<group>" + a tag pill).
+
+  Shared by the active-schedule macro below and the expired-schedule table in
+  schedules.html so the two stay in step. Group and tag are stacked rather
+  than sat side by side: the Target column is ~11% wide, and tag names run to
+  64 chars, so sharing one line left the pill spilling over the Schedule
+  column. Stacked, each gets the full column width and clamps independently,
+  with the full text on hover.
+#}
+{% macro schedule_target_cell(s) -%}
+<td class="cell-truncate schedule-target">
+    <span class="cell-text target-group"{% if s.group %} title="{{ s.group.name }}"{% endif %}>{{ s.group.name if s.group else '—' }}</span>
+    {% if s.tag %}<span class="badge target-tag" style="background:{{ s.tag.color }};color:#fff" title="Only devices in {{ s.group.name if s.group else 'this group' }} carrying the tag &#34;{{ s.tag.name }}&#34;">{{ s.tag.name }}</span>{% endif %}
+</td>
+{%- endmacro %}
+{#
   Active-schedule row. Shared between the full page render and the
   GET /api/schedules/{id}/row fragment endpoint so both paths emit
   identical markup — see issue #87. The row carries data-schedule-id
@@ -168,9 +184,7 @@
 <tr data-schedule-id="{{ s.id }}">
     <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
     <td class="cell-truncate"><span class="cell-text">{% if s.asset %}<span aria-hidden="true">{{ s.asset | asset_icon }}</span> {% endif %}{{ (s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else '—' }}</span></td>
-    <td>
-        {{ s.group.name if s.group else '—' }}{% if s.tag %}<span class="badge" style="margin-left:.3rem;background:{{ s.tag.color }};color:#fff" title="Only devices in this group carrying this tag">{{ s.tag.name }}</span>{% endif %}
-    </td>
+    {{ schedule_target_cell(s) }}
     <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
     <td>{{ s.priority }}</td>
     <td>
