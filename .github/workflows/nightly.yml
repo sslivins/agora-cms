@@ -7,19 +7,32 @@ on:
         description: "Leave the compose stack running after tests (for debugging)"
         type: boolean
         default: false
+  # Runs on EVERY pull request, deliberately unfiltered by path.
+  #
+  # This suite hard-codes selectors that live in cms/templates and
+  # cms/static, so a PR that only touches the UI can break it. It used to
+  # be filtered to `tests/nightly/**`, which meant exactly that class of
+  # change skipped it -- #876 went green on 21/21 checks and then broke
+  # main, needing a repair PR (#877). See #880.
+  #
+  # A path filter is also unsafe now that this is a required check: a
+  # skipped required check never reports and the PR waits forever.
+  #
+  # Cost is nil in practice -- this job takes ~5 min against ~9.5 min for
+  # the Tests workflow, so it is never the long pole.
   pull_request:
     branches: [main]
-    paths:
-      - 'tests/nightly/**'
-      - '.github/workflows/nightly.yml'
   # Runs on every main push so it can serve as the pre-deploy gate
   # (Publish & Deploy is triggered off a successful Smoke Test run).
   push:
     branches: [main]
 
+# Pushes to main share one queue so the deploy gate stays strictly
+# ordered. Pull requests get a queue each, and a new push to a PR
+# supersedes its own in-flight run.
 concurrency:
-  group: nightly-e2e
-  cancel-in-progress: false
+  group: nightly-e2e-${{ github.event_name == 'push' && 'main' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   nightly-e2e:
