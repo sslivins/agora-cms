@@ -535,6 +535,20 @@ tr:hover td { background: var(--overlay-faintest); }
     white-space: nowrap;
 }
 
+/* Target cell: group name stacked over an optional tag pill. The td keeps
+   overflow:visible (tooltips), so each child clamps itself. The pill uses
+   width:fit-content so short tags stay hugged to their text while long ones
+   stop at the column edge instead of running into the Schedule column. */
+.table-schedules .schedule-target .target-tag {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    margin-top: 0.25rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* Expired schedules table */
 .table-expired tbody tr { opacity: 0.55; }
 .table-expired tbody tr:hover { opacity: 0.85; }

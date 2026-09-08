@@ -170,9 +170,7 @@
             <tr data-schedule-id="{{ s.id }}" data-expired="1">
                 <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
                 <td class="cell-truncate"><span class="cell-text">{% if s.asset %}<span aria-hidden="true">{{ s.asset | asset_icon }}</span> {% endif %}{{ (s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else '—' }}</span></td>
-                <td>
-                    {{ s.group.name if s.group else '—' }}{% if s.tag %}<span class="badge" style="margin-left:.3rem;background:{{ s.tag.color }};color:#fff" title="Only devices in this group carrying this tag">{{ s.tag.name }}</span>{% endif %}
-                </td>
+                {{ macros.schedule_target_cell(s) }}
                 <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
                 <td class="actions">
