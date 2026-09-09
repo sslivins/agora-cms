@@ -60,7 +60,7 @@ async def _make_composed(
 
 async def _disable_all(app) -> None:
     from cms.database import get_db
-    from cms.services.assistant_flag import set_allowlist
+    from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
 
     factory = app.dependency_overrides[get_db]
     async for db in factory():
