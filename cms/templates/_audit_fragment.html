@@ -1,0 +1,7 @@
+{# Response body for GET /audit/rows.
+
+   Two <template> blocks so one round-trip carries everything a filter,
+   page change or poll needs. The client parses this and swaps each part
+   into place; nothing here is rendered directly by the browser. #}
+<template data-part="rows">{% include "_audit_tbody.html" %}</template>
+<template data-part="pagination">{% include "_audit_pagination.html" %}</template>
