@@ -9,6 +9,7 @@ from cms.models.device_alert import DeviceAlert  # noqa: F401
 from cms.models.device_alert_state import DeviceAlertState  # noqa: F401
 from cms.models.device_event import DeviceEvent, DeviceEventType  # noqa: F401
 from cms.models.device_profile import DeviceProfile  # noqa: F401
+from cms.models.feature_flag import FeatureFlagState  # noqa: F401
 from cms.models.group_asset import GroupAsset  # noqa: F401
 from cms.models.leader_lease import LeaderLease  # noqa: F401
 from cms.models.log_request import LogRequest  # noqa: F401
