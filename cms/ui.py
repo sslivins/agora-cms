@@ -46,7 +46,7 @@ from cms.database import get_db
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE, has_permission
+from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE, FEATURES_READ, FEATURES_WRITE, has_permission
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
@@ -1575,6 +1575,29 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "fleet_counts": counts,
         "active_alert": active_alert,
         "needs_attention_tags": sorted(NEEDS_ATTENTION_TAGS),
+    })
+
+
+# ── Feature flags ──
+
+
+@router.get("/features", response_class=HTMLResponse)
+async def features_page(
+    request: Request,
+    user: User = Depends(require_permission(FEATURES_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only listing of every declared feature flag.
+
+    Deliberately its own tab rather than a Settings card: this is about who
+    can see what, which is closer to user administration than to configuring
+    the system, and it will grow a row per flag over time.
+    """
+    request.state.user = user
+    perms = user.role.permissions if user.role else []
+    return templates.TemplateResponse(request, "features.html", {
+        "active_tab": "features",
+        "can_write": has_permission(perms, FEATURES_WRITE),
     })
 
 

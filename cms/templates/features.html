@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Features — Agora CMS{% endblock %}
+{% block content %}
+<h1>Features</h1>
+
+<p class="text-muted" style="max-width: 60rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
+    Features can be shipped to production turned off, then released to specific
+    people without a redeploy. <strong>Off means off</strong> — including for
+    admins — unless a feature explicitly opts into an admin preview.
+</p>
+
+<div id="features-list">
+    <div class="card"><span class="text-muted">Loading…</span></div>
+</div>
+
+<style>
+.feature-flag h2 { margin-bottom: 0.25rem; }
+.feature-flag .flag-meta { font-size: 0.8rem; margin-bottom: 0.75rem; }
+.feature-flag .flag-states { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.feature-flag .flag-states label { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+.feature-flag .flag-targeting { border: 1px solid var(--border); border-radius: 4px; padding: 0.75rem; margin-bottom: 0.75rem; }
+.feature-flag .flag-picker { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; }
+.feature-flag .flag-picker label { display: block; padding: 0.15rem 0; cursor: pointer; }
+.feature-flag .flag-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 1rem; }
+@media (max-width: 800px) { .feature-flag .flag-columns { grid-template-columns: minmax(0, 1fr); } }
+.feature-flag .flag-search { width: 100%; margin-bottom: 0.4rem; }
+.badge-flag-on { background: var(--success); color: #000; }
+.badge-flag-targeted { background: var(--primary); color: var(--text-on-accent); }
+.badge-flag-off { background: #7f8c8d; color: #fff; }
+.badge-flag-overdue { background: var(--warning); color: #000; }
+</style>
+
+<script>
+(function () {
+    const CAN_WRITE = {{ 'true' if can_write else 'false' }};
+    const listEl = document.getElementById('features-list');
+    let users = [];
+    let roles = [];
+
+    function label(u) {
+        return (u.display_name || u.username) + (u.email ? ' (' + u.email + ')' : '');
+    }
+
+    function esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function stateBadge(flag) {
+        const cls = 'badge-flag-' + flag.state;
+        const text = flag.state === 'targeted' ? 'Targeted' : (flag.state === 'on' ? 'On' : 'Off');
+        return '<span class="badge ' + cls + '">' + text + '</span>';
+    }
+
+    function render(payload) {
+        users = payload.users || [];
+        roles = payload.roles || [];
+        const flags = payload.flags || [];
+
+        if (!flags.length) {
+            listEl.innerHTML =
+                '<div class="card"><p class="text-muted" style="margin:0;">' +
+                'No features are currently behind a flag. Flags are declared in code ' +
+                'and appear here automatically once they ship.</p></div>';
+            return;
+        }
+
+        listEl.innerHTML = flags.map(renderFlag).join('');
+        flags.forEach(wireFlag);
+    }
+
+    function renderFlag(flag) {
+        const selUsers = new Set(flag.user_ids || []);
+        const selRoles = new Set(flag.role_ids || []);
+        const disabled = CAN_WRITE ? '' : ' disabled';
+
+        const meta = [];
+        meta.push('Owner: ' + esc(flag.owner));
+        if (flag.kind === 'release' && flag.expires) {
+            meta.push('Remove by ' + esc(flag.expires));
+        } else if (flag.kind === 'permanent') {
+            meta.push('Permanent control');
+        }
+        if (flag.is_default) {
+            meta.push('Never changed - showing the default declared in code');
+        }
+
+        const stateRadios = ['off', 'targeted', 'on'].map(function (s) {
+            const text = s === 'targeted' ? 'Only chosen users and roles' : (s === 'on' ? 'Everyone' : 'Nobody');
+            return '<label><input type="radio" name="state-' + esc(flag.name) + '" value="' + s + '"' +
+                (flag.state === s ? ' checked' : '') + disabled + '> ' +
+                '<span>' + (s === 'off' ? 'Off' : (s === 'on' ? 'On' : 'Targeted')) +
+                ' <span class="text-muted">- ' + text + '</span></span></label>';
+        }).join('');
+
+        const roleBoxes = roles.map(function (r) {
+            return '<label><input type="checkbox" data-role="' + r.id + '"' +
+                (selRoles.has(r.id) ? ' checked' : '') + disabled + '> ' + esc(r.name) + '</label>';
+        }).join('') || '<span class="text-muted">No roles</span>';
+
+        const userBoxes = users.map(function (u) {
+            return '<label data-search="' + esc(label(u).toLowerCase()) + '">' +
+                '<input type="checkbox" data-user="' + u.id + '"' +
+                (selUsers.has(u.id) ? ' checked' : '') + disabled + '> ' + esc(label(u)) + '</label>';
+        }).join('') || '<span class="text-muted">No active users</span>';
+
+        return '' +
+        '<div class="card feature-flag" data-flag="' + esc(flag.name) + '">' +
+            '<h2>' + esc(flag.name) + ' ' + stateBadge(flag) +
+                (flag.is_overdue ? ' <span class="badge badge-flag-overdue">Past removal date</span>' : '') +
+            '</h2>' +
+            '<p style="margin: 0 0 0.35rem;">' + esc(flag.description) + '</p>' +
+            '<p class="text-muted flag-meta">' + meta.map(esc).join(' &middot; ') + '</p>' +
+            '<div class="flag-states">' + stateRadios + '</div>' +
+            '<div class="flag-targeting" data-targeting' +
+                (flag.state === 'targeted' ? '' : ' style="display:none;"') + '>' +
+                (flag.include_admins
+                    ? '<p class="text-muted" style="font-size:0.8rem;margin:0 0 0.6rem;">' +
+                      'Anyone who can change system settings also sees this feature while it is targeted.</p>'
+                    : '') +
+                '<div class="flag-columns">' +
+                    '<div><strong style="font-size:0.85rem;">Roles</strong>' +
+                        '<div class="flag-picker" style="margin-top:0.4rem;">' + roleBoxes + '</div></div>' +
+                    '<div><strong style="font-size:0.85rem;">Users</strong>' +
+                        '<input type="text" class="flag-search" placeholder="Filter users…" style="margin-top:0.4rem;">' +
+                        '<div class="flag-picker">' + userBoxes + '</div></div>' +
+                '</div>' +
+            '</div>' +
+            (CAN_WRITE
+                ? '<button type="button" class="btn btn-primary" data-save>Save</button>'
+                : '<p class="text-muted" style="margin:0;font-size:0.8rem;">You have read-only access to features.</p>') +
+        '</div>';
+    }
+
+    function wireFlag(flag) {
+        const card = listEl.querySelector('[data-flag="' + CSS.escape(flag.name) + '"]');
+        if (!card) return;
+
+        const targeting = card.querySelector('[data-targeting]');
+        card.querySelectorAll('input[type="radio"]').forEach(function (radio) {
+            radio.addEventListener('change', function () {
+                targeting.style.display = radio.value === 'targeted' && radio.checked ? '' : 'none';
+            });
+        });
+
+        const search = card.querySelector('.flag-search');
+        if (search) {
+            search.addEventListener('input', function () {
+                const q = search.value.trim().toLowerCase();
+                card.querySelectorAll('label[data-search]').forEach(function (l) {
+                    l.style.display = !q || l.dataset.search.includes(q) ? '' : 'none';
+                });
+            });
+        }
+
+        const saveBtn = card.querySelector('[data-save]');
+        if (!saveBtn) return;
+        saveBtn.addEventListener('click', async function () {
+            const state = (card.querySelector('input[type="radio"]:checked') || {}).value || 'off';
+            const body = {
+                state: state,
+                user_ids: state === 'targeted'
+                    ? Array.from(card.querySelectorAll('input[data-user]:checked')).map(function (c) { return c.dataset.user; })
+                    : [],
+                role_ids: state === 'targeted'
+                    ? Array.from(card.querySelectorAll('input[data-role]:checked')).map(function (c) { return c.dataset.role; })
+                    : [],
+            };
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving…';
+            try {
+                const resp = await fetch('/api/features/' + encodeURIComponent(flag.name), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) {
+                    let detail = 'Save failed (' + resp.status + ')';
+                    try {
+                        const d = await resp.json();
+                        if (d && d.detail && d.detail.message) detail = d.detail.message;
+                        else if (d && typeof d.detail === 'string') detail = d.detail;
+                    } catch (e) {}
+                    showToast(detail, 'error');
+                    return;
+                }
+                // Re-render from the server's view rather than the local form:
+                // the API clears targeting when the state isn't "targeted", and
+                // the page should show what was actually stored.
+                render(await resp.json());
+                showToast('Saved ' + flag.name);
+                return;
+            } catch (e) {
+                showToast('Network error — please try again', 'error');
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save';
+            }
+        });
+    }
+
+    async function load() {
+        try {
+            const resp = await fetch('/api/features');
+            if (!resp.ok) {
+                listEl.innerHTML = '<div class="card"><span class="text-muted">Could not load features (' + resp.status + ').</span></div>';
+                return;
+            }
+            render(await resp.json());
+        } catch (e) {
+            listEl.innerHTML = '<div class="card"><span class="text-muted">Could not load features.</span></div>';
+        }
+    }
+
+    load();
+})();
+</script>
+{% endblock %}

@@ -71,6 +71,14 @@ IMAGER_READ = "imager:read"      # List fleets, base images, view jobs
 IMAGER_BUILD = "imager:build"    # Build provisioned images, download
 IMAGER_MANAGE = "imager:manage"  # Catalog refresh, base-image import/delete
 
+# ── Feature flag administration ──
+# Deliberately separate from settings:*.  Deciding who can see a half-built
+# feature is a different call from being able to change SMTP or token budgets,
+# and keeping it separate means the flag admin route can never be locked out by
+# a flag (see cms/services/feature_flags.py).
+FEATURES_READ = "features:read"
+FEATURES_WRITE = "features:write"
+
 
 ALL_PERMISSIONS: list[str] = [
     DEVICES_READ, DEVICES_WRITE, DEVICES_MANAGE,
@@ -90,6 +98,7 @@ ALL_PERMISSIONS: list[str] = [
     GROUPS_VIEW_ALL,
     SYSTEM_HEALTH,
     IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE,
+    FEATURES_READ, FEATURES_WRITE,
 ]
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -124,6 +133,8 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     IMAGER_READ: "View configured fleets, cached base images, and imager jobs",
     IMAGER_BUILD: "Build provisioned Pi images and download outputs",
     IMAGER_MANAGE: "Refresh the upstream catalog and import or delete cached base images",
+    FEATURES_READ: "View feature flags and who they are turned on for",
+    FEATURES_WRITE: "Turn features on or off and choose which users and roles get them",
 }
 
 # ── Predefined role templates ──

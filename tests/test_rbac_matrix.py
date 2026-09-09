@@ -144,6 +144,15 @@ ENDPOINTS: list[EP] = [
     EP("GET", f"/api/imager/jobs/{_FAKE_ID}", (ADMIN,)),
     EP("GET", f"/api/imager/download/{_FAKE_ID}", (ADMIN,)),
 
+    # ── Feature flags ──
+    # Admin-only: features:read/features:write are deliberately separate from
+    # settings:* and are not carried by the Operator or Viewer templates.
+    # The PUT targets an undeclared flag, so it 404s for permitted roles and
+    # still 403s for the rest -- exactly what the gate check needs.
+    EP("GET", "/api/features", (ADMIN,)),
+    EP("PUT", "/api/features/nonexistent-flag", (ADMIN,),
+       json_body={"state": "off"}),
+
     # ── Admin-managed API keys ──
     EP("GET", "/api/keys", (ADMIN,)),
     EP("POST", "/api/keys", (ADMIN,), json_body={}),
