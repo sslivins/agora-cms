@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -156,9 +156,12 @@ async def create_user(
             detail="SMTP is not configured. Set up email in Settings → SMTP before creating user accounts.",
         )
 
-    # Check email uniqueness
-    exists = await db.execute(select(User).where(User.email == data.email))
-    if exists.scalar_one_or_none():
+    # Check email uniqueness (case-insensitively — ``data.email`` is already
+    # normalised by the schema, but stored rows may predate normalisation).
+    exists = await db.execute(
+        select(User).where(func.lower(User.email) == data.email)
+    )
+    if exists.scalars().first():
         raise HTTPException(status_code=409, detail="Email already exists")
 
     # Verify role exists
@@ -169,14 +172,18 @@ async def create_user(
     # Generate temporary password if none provided
     temp_password = data.password or secrets.token_urlsafe(12)
 
-    # Use email prefix as username (internal field)
+    # Use email prefix as username (internal field). The email is already
+    # lowercased by the schema, so the username inherits that normalisation.
     username = data.email.split("@")[0]
-    # Ensure uniqueness by appending suffix if needed
+    # Ensure uniqueness by appending suffix if needed. Compared case-folded so
+    # a legacy mixed-case username still counts as taken.
     base_username = username
     counter = 1
     while True:
-        check = await db.execute(select(User).where(User.username == username))
-        if not check.scalar_one_or_none():
+        check = await db.execute(
+            select(User).where(func.lower(User.username) == username)
+        )
+        if not check.scalars().first():
             break
         username = f"{base_username}{counter}"
         counter += 1
@@ -246,10 +253,14 @@ async def update_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     if data.email is not None:
+        # Case-insensitive uniqueness check: ``data.email`` is already
+        # normalised by the schema, but stored rows may predate normalisation.
         exists = await db.execute(
-            select(User).where(User.email == data.email, User.id != user_id)
+            select(User).where(
+                func.lower(User.email) == data.email, User.id != user_id
+            )
         )
-        if exists.scalar_one_or_none():
+        if exists.scalars().first():
             raise HTTPException(status_code=409, detail="Email already exists")
         user.email = data.email
     if data.display_name is not None:

@@ -51,7 +51,7 @@ from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.group_asset import GroupAsset
-from cms.models.user import User, UserGroup, setup_token_is_expired, reset_token_is_expired
+from cms.models.user import User, UserGroup, normalize_email, setup_token_is_expired, reset_token_is_expired
 from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
@@ -287,13 +287,27 @@ async def login_submit(
     # Authenticate against the users table — try email first, then username for backward compat.
     # Query without the is_active filter so we can emit a distinct audit reason
     # ("inactive" vs "user_not_found" vs invalid password) for forensics.
-    from sqlalchemy import select as sa_select, or_
+    #
+    # Both comparisons are case-folded. Emails are case-insensitive in
+    # practice, and usernames are derived from the email local part
+    # (routers/users.py) so they inherit its casing and hit the same trap.
+    # Folding here rather than relying solely on normalised storage also
+    # rescues rows written before emails were normalised.
+    from sqlalchemy import func, select as sa_select, or_
+    login_key = (login_id or "").strip().lower()
     result = await db.execute(
         sa_select(User).where(
-            or_(User.email == login_id, User.username == login_id),
-        )
+            or_(
+                func.lower(User.email) == login_key,
+                func.lower(User.username) == login_key,
+            ),
+        ).order_by(User.created_at)
     )
-    user = result.scalar_one_or_none()
+    # ``.first()`` rather than ``.scalar_one_or_none()``: legacy data may hold
+    # two rows differing only by case (nothing prevented it until the
+    # accompanying migration), and a 500 at the login form would be a worse
+    # failure than deterministically preferring the oldest account.
+    user = result.scalars().first()
 
     valid = False
     fail_reason: str | None = None
@@ -424,8 +438,13 @@ async def forgot_password_submit(
     form = await request.form()
     email = (form.get("email", "") or "").strip()
 
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
+    # Case-folded: this path is deliberately silent (the response is identical
+    # whether or not a user matched), so a case mismatch would give the
+    # operator no clue why the reset never arrived.
+    result = await db.execute(
+        select(User).where(func.lower(User.email) == email.lower())
+    )
+    user = result.scalars().first()
 
     # Only mint+send for an active account with SMTP configured. Every branch
     # below still returns the identical generic page so the caller learns
@@ -672,7 +691,7 @@ async def setup_account_update(
 
     data = await request.json()
     display_name = (data.get("display_name") or "").strip()
-    email = (data.get("email") or "").strip()
+    email = normalize_email(data.get("email") or "")
     password = data.get("password") or ""
 
     if not display_name:
@@ -682,12 +701,13 @@ async def setup_account_update(
     if len(password) < 6:
         return JSONResponse({"error": "Password must be at least 6 characters"}, status_code=400)
 
-    # Check if email is taken by a different user
+    # Check if email is taken by a different user (case-insensitively, so a
+    # legacy mixed-case row still counts as taken).
     from sqlalchemy import select as sa_select
     existing = await db.execute(
-        sa_select(User).where(User.email == email, User.id != user.id)
+        sa_select(User).where(func.lower(User.email) == email, User.id != user.id)
     )
-    if existing.scalar_one_or_none():
+    if existing.scalars().first():
         return JSONResponse({"error": "A user with this email already exists"}, status_code=409)
 
     # Update the current admin account

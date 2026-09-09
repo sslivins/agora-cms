@@ -18,7 +18,7 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.api_key import APIKey
 from cms.models.setting import CMSSetting
-from cms.models.user import Role, User, UserGroup
+from cms.models.user import Role, User, UserGroup, normalize_email
 
 _log = logging.getLogger(__name__)
 
@@ -678,7 +678,7 @@ async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None
     )
     admin_user = result.scalar_one_or_none()
 
-    admin_email = settings.admin_email
+    admin_email = normalize_email(settings.admin_email or "")
 
     if admin_user is None:
         # Create admin user from env vars
