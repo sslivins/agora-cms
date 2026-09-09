@@ -1,0 +1,8 @@
+{# Audit table body. Shared by /audit (first paint) and /audit/rows (live
+   updates and in-place filtering) so the two can never drift apart. #}
+{% from "_macros.html" import audit_row_pair %}
+{% for entry in entries %}
+{{ audit_row_pair(entry, tz) }}
+{% else %}
+<tr class="audit-empty"><td colspan="5" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No entries match the current filters.{% else %}No audit log entries yet.{% endif %}</td></tr>
+{% endfor %}

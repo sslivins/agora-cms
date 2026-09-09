@@ -1,5 +1,6 @@
 """Tests for audit log: description generation, enriched details, API filters, and UI."""
 
+import re
 import uuid
 
 import pytest
@@ -15,6 +16,13 @@ from cms.services.audit_service import build_description, audit_log
 
 
 # ── Helpers ──
+
+
+async def _text(awaitable) -> str:
+    """Await a client call and return its body."""
+    resp = await awaitable
+    assert resp.status_code == 200
+    return resp.text
 
 
 async def _get_role_id(db: AsyncSession, name: str) -> uuid.UUID:
@@ -441,3 +449,76 @@ class TestAuditUI:
         html = resp.text
         # Friendly labels should appear instead of raw keys
         assert "Performed By" in html or "Role" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Live-update fragment (/audit/rows)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestAuditRowsFragment:
+    """The audit page refreshes itself by re-fetching rendered rows.
+
+    The fragment must stay interchangeable with what /audit renders — if the
+    two ever diverge, live-updated rows would look or behave differently from
+    the ones present on first paint.
+    """
+
+    @pytest_asyncio.fixture
+    async def seeded_ui(self, db_session, client):
+        user = await _create_test_user(db_session, "fraguser")
+        for i in range(3):
+            await audit_log(
+                db_session, user=user,
+                action="role.create", resource_type="role",
+                details={"name": f"FragRole{i}", "actor_username": "admin"},
+            )
+        await db_session.commit()
+
+    @pytest.mark.asyncio
+    async def test_returns_both_parts(self, client, seeded_ui):
+        resp = await client.get("/audit/rows")
+        assert resp.status_code == 200
+        assert '<template data-part="rows">' in resp.text
+        assert '<template data-part="pagination">' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_omits_page_chrome(self, client, seeded_ui):
+        """Only the table body and pager — no <html>, nav or filter bar."""
+        html = await _text(client.get("/audit/rows"))
+        assert "<html" not in html.lower()
+        assert "auditFilterForm" not in html
+
+    @pytest.mark.asyncio
+    async def test_rows_match_full_page_markup(self, client, seeded_ui):
+        page = await _text(client.get("/audit"))
+        frag = await _text(client.get("/audit/rows"))
+        for entry_id in re.findall(r'data-audit-id="([^"]+)"', page):
+            assert f'data-audit-id="{entry_id}"' in frag
+        assert "toggleAuditRow" in frag
+        assert "audit-detail" in frag
+
+    @pytest.mark.asyncio
+    async def test_counts_exposed_as_headers(self, client, seeded_ui):
+        resp = await client.get("/audit/rows?per_page=10")
+        assert int(resp.headers["X-Audit-Total"]) >= 3
+        assert resp.headers["X-Audit-Page"] == "1"
+        assert int(resp.headers["X-Audit-Total-Pages"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_filters_apply(self, client, seeded_ui):
+        html = await _text(client.get("/audit/rows?q=FragRole1"))
+        assert "FragRole1" in html
+        assert "FragRole0" not in html
+
+    @pytest.mark.asyncio
+    async def test_empty_result_marked_for_client(self, client, seeded_ui):
+        """The client removes this placeholder when a polled row arrives."""
+        html = await _text(client.get("/audit/rows?q=nothingmatchesthis"))
+        assert "audit-empty" in html
+
+    @pytest.mark.asyncio
+    async def test_unauthed_rejected(self, unauthed_client):
+        resp = await unauthed_client.get("/audit/rows")
+        assert resp.status_code in (401, 403, 303)
+

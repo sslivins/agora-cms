@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-header">
     <h2>Audit Log</h2>
-    <span class="text-muted">{{ total }} event{{ 's' if total != 1 else '' }}</span>
+    <span class="text-muted" id="auditTotal" data-total="{{ total }}">{{ total }} event{{ 's' if total != 1 else '' }}</span>
 </div>
 
 {# ── Filter bar ── #}
@@ -18,7 +18,7 @@
             </div>
             <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
                 <label style="font-size:0.75rem;">Action</label>
-                <select name="action" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                <select name="action" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
                     <option value="">All actions</option>
                     {% for a in available_actions %}
                     <option value="{{ a }}" {% if filter_action == a %}selected{% endif %}>{{ a }}</option>
@@ -27,7 +27,7 @@
             </div>
             <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
                 <label style="font-size:0.75rem;">User</label>
-                <select name="user_id" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                <select name="user_id" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
                     <option value="">All users</option>
                     {% for val, label in audit_users %}
                     <option value="{{ val }}" {% if filter_user_id == val %}selected{% endif %}>{{ label }}</option>
@@ -36,11 +36,11 @@
             </div>
             <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
                 <label style="font-size:0.75rem;">Since</label>
-                <input type="date" name="since" value="{{ filter_since }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                <input type="date" name="since" value="{{ filter_since }}" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
             </div>
             <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
                 <label style="font-size:0.75rem;">Until</label>
-                <input type="date" name="until" value="{{ filter_until }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                <input type="date" name="until" value="{{ filter_until }}" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
             </div>
             {% if has_filters %}
             <div style="margin-bottom:0; align-items:flex-end; padding-bottom:0.1rem;">
@@ -49,22 +49,8 @@
             {% endif %}
         </div>
     </form>
-    <script>
-    (function() {
-        var timer, input = document.getElementById('auditSearchInput');
-        if (!input) return;
-        input.addEventListener('input', function() {
-            clearTimeout(timer);
-            timer = setTimeout(function() { document.getElementById('auditFilterForm').submit(); }, 400);
-        });
-    })();
-    </script>
 </div>
 
-{# ── Macro to build pagination URLs preserving filters ── #}
-{% macro page_url(p) -%}
-/audit?page={{ p }}&per_page={{ per_page }}{% if filter_q %}&q={{ filter_q | urlencode }}{% endif %}{% if filter_action %}&action={{ filter_action | urlencode }}{% endif %}{% if filter_user_id %}&user_id={{ filter_user_id }}{% endif %}{% if filter_since %}&since={{ filter_since }}{% endif %}{% if filter_until %}&until={{ filter_until }}{% endif %}
-{%- endmacro %}
 
 <div class="card">
     <table style="table-layout: fixed; width: 100%;">
@@ -77,171 +63,192 @@
                 <th style="width:10%;">Resource</th>
             </tr>
         </thead>
-        <tbody>
-            {% for entry in entries %}
-            <tr class="audit-row" onclick="toggleAuditRow(this)" data-audit-id="{{ entry.id }}">
-                <td class="expand-toggle">▶</td>
-                <td style="white-space:nowrap;">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                <td>{{ entry.user.display_name or entry.user.username if entry.user else (entry.details.actor_username if entry.details and entry.details.actor_username is defined else '—') }}</td>
-                <td class="audit-description"><div title="{{ entry.description or entry.action }}">{{ entry.description or entry.action }}</div></td>
-                <td>
-                    {% if entry.resource_type %}
-                    <span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.resource_type }}</span>
-                    {% else %}—{% endif %}
-                </td>
-            </tr>
-            <tr class="audit-detail" data-detail-for="{{ entry.id }}" style="display: none;">
-                <td></td>
-                <td colspan="4">
-                    <div class="detail-grid">
-                        <div class="detail-item">
-                            <span class="detail-label">Description</span>
-                            <span class="detail-value" style="white-space:normal; word-break:break-word;">{{ entry.description or entry.action }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Action</span>
-                            <span class="detail-value"><span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.action }}</span></span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Resource ID</span>
-                            <span class="detail-value monospace">{{ entry.resource_id or '—' }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">User</span>
-                            <span class="detail-value">{{ entry.user.username if entry.user else (entry.details.actor_username if entry.details and entry.details.actor_username is defined else '—') }}{% if entry.user and entry.user.display_name %} ({{ entry.user.display_name }}){% endif %}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">IP Address</span>
-                            <span class="detail-value monospace">{{ entry.ip_address or '—' }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Timestamp</span>
-                            <span class="detail-value">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S %Z') }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Entry ID</span>
-                            <span class="detail-value monospace" style="font-size:0.75rem;">{{ entry.id }}</span>
-                        </div>
-                    </div>
-                    {% if entry.details %}
-                    {# ── True diff renderer (changes: {field: {old, new}}) ── #}
-                    {% set changes = entry.details.changes if entry.details.changes is mapping else None %}
-                    {% if changes %}
-                    <div style="margin-top:0.75rem;">
-                        <span class="detail-label" style="display:block; margin-bottom:0.25rem;">Changes</span>
-                        <table class="audit-changes">
-                            <thead><tr><th>Field</th><th>From</th><th></th><th>To</th></tr></thead>
-                            <tbody>
-                            {% for field, change in changes.items() %}
-                                <tr>
-                                    <td>{{ field | replace('_', ' ') | title }}</td>
-                                    <td><span class="diff-old">{{ '∅' if change.old is none or change.old == '' else change.old }}</span></td>
-                                    <td class="diff-arrow">→</td>
-                                    <td><span class="diff-new">{{ '∅' if change.new is none or change.new == '' else change.new }}</span></td>
-                                </tr>
-                            {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    {% endif %}
-                    {# ── Friendly key-value details ── #}
-                    {% set label_map = {
-                        'actor_username': 'Performed By',
-                        'target_username': 'Target User',
-                        'target_display_name': 'Display Name',
-                        'owner_username': 'Key Owner',
-                        'role_name': 'Role',
-                        'email': 'Email',
-                        'key_type': 'Key Type',
-                        'permissions_count': 'Permissions',
-                        'on_behalf_of': 'On Behalf Of',
-                        'auth_method': 'Auth Method',
-                        'device_name': 'Device',
-                        'schedule_name': 'Schedule',
-                        'filename': 'File',
-                        'permissions': 'Permissions',
-                        'owner_id': 'Owner ID',
-                    } %}
-                    {% set detail_items = [] %}
-                    {% for key, val in entry.details.items() %}
-                        {% if key != 'changes' and val is not none and val != '' %}
-                            {% if val is iterable and val is not string and val is not mapping %}
-                                {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val | join(', '))) %}
-                            {% elif val is mapping %}
-                                {# Skip nested dicts other than `changes` to avoid dumping {} #}
-                            {% else %}
-                                {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val)) %}
-                            {% endif %}
-                        {% endif %}
-                    {% endfor %}
-                    {% if detail_items %}
-                    <div style="margin-top:0.75rem;">
-                        <span class="detail-label" style="display:block; margin-bottom:0.25rem;">Details</span>
-                        <div class="detail-grid">
-                            {% for label, value in detail_items %}
-                            <div class="detail-item">
-                                <span class="detail-label">{{ label }}</span>
-                                <span class="detail-value">{{ value }}</span>
-                            </div>
-                            {% endfor %}
-                        </div>
-                    </div>
-                    {% endif %}
-                    {# ── Raw JSON toggle ── #}
-                    <div style="margin-top:0.5rem;">
-                        <a href="javascript:void(0)" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.textContent = this.nextElementSibling.style.display === 'none' ? 'Show raw JSON' : 'Hide raw JSON';" class="text-muted" style="font-size:0.75rem; text-decoration:underline;">Show raw JSON</a>
-                        <pre class="audit-json" style="display:none; margin-top:0.25rem;">{{ entry.details | tojson(indent=2) }}</pre>
-                    </div>
-                    {% endif %}
-                </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="5" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No entries match the current filters.{% else %}No audit log entries yet.{% endif %}</td></tr>
-            {% endfor %}
+        <tbody id="auditTbody">
+{% include "_audit_tbody.html" %}
         </tbody>
     </table>
 </div>
 
 {# ── Pagination ── #}
-<div class="pagination" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; margin-top:0.75rem;">
-    <div style="display:flex; align-items:center; gap:0.5rem;">
-        <span class="text-muted" style="font-size:0.85rem;">
-            {% if total > 0 %}
-            Showing {{ (page - 1) * per_page + 1 }}–{{ [page * per_page, total] | min }} of {{ total }}
-            {% else %}
-            No entries
-            {% endif %}
-        </span>
-        <span class="text-muted" style="font-size:0.85rem;">·</span>
-        <label class="text-muted" style="font-size:0.85rem;">
-            Per page:
-            <select onchange="window.location.href=this.value" style="padding:0.2rem 0.4rem; font-size:0.8rem; background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px;">
-                {% for size in [25, 50, 100] %}
-                <option value="{{ page_url(1) | replace('per_page=' ~ per_page, 'per_page=' ~ size) }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
-                {% endfor %}
-            </select>
-        </label>
-    </div>
-    {% if total_pages > 1 %}
-    <div style="display:flex; align-items:center; gap:0.3rem;">
-        {% if page > 1 %}
-        <a href="{{ page_url(1) }}" class="btn btn-secondary btn-sm" title="First page">«</a>
-        <a href="{{ page_url(page - 1) }}" class="btn btn-secondary btn-sm">‹ Prev</a>
-        {% endif %}
-        {% set start_page = [1, page - 2] | max %}
-        {% set end_page = [total_pages, page + 2] | min %}
-        {% for p in range(start_page, end_page + 1) %}
-        {% if p == page %}
-        <span class="btn btn-primary btn-sm" style="pointer-events:none;">{{ p }}</span>
-        {% else %}
-        <a href="{{ page_url(p) }}" class="btn btn-secondary btn-sm">{{ p }}</a>
-        {% endif %}
-        {% endfor %}
-        {% if page < total_pages %}
-        <a href="{{ page_url(page + 1) }}" class="btn btn-secondary btn-sm">Next ›</a>
-        <a href="{{ page_url(total_pages) }}" class="btn btn-secondary btn-sm" title="Last page">»</a>
-        {% endif %}
-    </div>
-    {% endif %}
+<div class="pagination" id="auditPagination" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; margin-top:0.75rem;">
+{% include "_audit_pagination.html" %}
 </div>
+
+{# ── Live updates ───────────────────────────────────────────────────────────
+   Filtering, paging and polling all go through one fetch of /audit/rows and
+   swap the rendered fragment into place, so the page never does a full reload
+   and an expanded detail row survives a refresh. #}
+<script>
+(function () {
+    var PER_PAGE = {{ per_page | tojson }};
+    var POLL_INTERVAL_MS = 10000;
+
+    var form = document.getElementById('auditFilterForm');
+    var tbody = document.getElementById('auditTbody');
+    var pager = document.getElementById('auditPagination');
+    var totalEl = document.getElementById('auditTotal');
+    if (!form || !tbody || !pager) return;
+
+    var currentUrl = window.location.pathname + window.location.search;
+    // Bumped on every request so a slow poll can't overwrite a newer filter.
+    var generation = 0;
+
+    function buildUrl(page) {
+        var params = new URLSearchParams();
+        var fields = ['q', 'action', 'user_id', 'since', 'until'];
+        for (var i = 0; i < fields.length; i++) {
+            var el = form.elements[fields[i]];
+            if (el && el.value.trim()) params.set(fields[i], el.value.trim());
+        }
+        params.set('per_page', PER_PAGE);
+        params.set('page', page || 1);
+        return '/audit?' + params.toString();
+    }
+
+    function fragmentUrl(url) {
+        return url.replace(/^\/audit/, '/audit/rows');
+    }
+
+    function setTotal(total) {
+        if (!totalEl) return;
+        totalEl.dataset.total = total;
+        totalEl.textContent = total + ' event' + (total === '1' ? '' : 's');
+    }
+
+    function parse(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        return {
+            rows: doc.querySelector('template[data-part="rows"]'),
+            pagination: doc.querySelector('template[data-part="pagination"]')
+        };
+    }
+
+    function flash(el) {
+        el.style.transition = 'background-color 2s ease-out';
+        el.style.backgroundColor = 'rgba(46, 204, 113, 0.08)';
+        setTimeout(function () { el.style.backgroundColor = ''; }, 50);
+    }
+
+    // Replace everything. Used when the user changes what they are looking at.
+    function render(parts) {
+        tbody.innerHTML = '';
+        tbody.appendChild(parts.rows.content.cloneNode(true));
+        pager.innerHTML = '';
+        pager.appendChild(parts.pagination.content.cloneNode(true));
+    }
+
+    // Splice in only what is new, so rows the user has expanded stay expanded
+    // and the table doesn't visibly flicker on every poll.
+    function merge(parts) {
+        var incoming = parts.rows.content.cloneNode(true);
+        var seen = {};
+        var existing = tbody.querySelectorAll('tr.audit-row[data-audit-id]');
+        for (var i = 0; i < existing.length; i++) {
+            seen[existing[i].dataset.auditId] = true;
+        }
+        var newRows = incoming.querySelectorAll('tr.audit-row[data-audit-id]');
+        var added = [];
+        for (var j = newRows.length - 1; j >= 0; j--) {
+            var row = newRows[j];
+            if (seen[row.dataset.auditId]) continue;
+            var detail = row.nextElementSibling;
+            tbody.insertBefore(row, tbody.firstChild);
+            if (detail && detail.classList.contains('audit-detail')) {
+                tbody.insertBefore(detail, row.nextSibling);
+            }
+            added.push(row);
+        }
+        if (!added.length) return;
+        // A placeholder row is not a real entry; drop it once anything lands.
+        var empty = tbody.querySelector('tr.audit-empty');
+        if (empty) empty.remove();
+        for (var k = 0; k < added.length; k++) flash(added[k]);
+
+        var keep = tbody.querySelectorAll('tr.audit-row[data-audit-id]');
+        for (var m = PER_PAGE; m < keep.length; m++) {
+            var extra = keep[m].nextElementSibling;
+            if (extra && extra.classList.contains('audit-detail')) extra.remove();
+            keep[m].remove();
+        }
+        pager.innerHTML = '';
+        pager.appendChild(parts.pagination.content.cloneNode(true));
+    }
+
+    function load(url, opts) {
+        opts = opts || {};
+        var mine = ++generation;
+        return fetch(fragmentUrl(url), {
+            headers: {'X-Requested-With': 'fetch'},
+            credentials: 'same-origin'
+        }).then(function (resp) {
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var total = resp.headers.get('X-Audit-Total');
+            return resp.text().then(function (html) {
+                if (mine !== generation) return;  // superseded
+                var parts = parse(html);
+                if (!parts.rows || !parts.pagination) return;
+                if (opts.merge) { merge(parts); } else { render(parts); }
+                if (total !== null) setTotal(total);
+                if (!opts.merge) {
+                    currentUrl = url;
+                    if (opts.push !== false) window.history.pushState({}, '', url);
+                }
+            });
+        }).catch(function () {
+            // Transient failures are not worth interrupting the page for; the
+            // next poll or interaction retries.
+        });
+    }
+
+    function currentPage() {
+        var match = /[?&]page=(\d+)/.exec(currentUrl);
+        return match ? parseInt(match[1], 10) : 1;
+    }
+
+    // Filters reset to page 1 — staying on page 7 of a different result set
+    // would usually land the user on an empty page.
+    var debounce;
+    form.addEventListener('input', function (event) {
+        if (event.target.type !== 'text' && event.target.type !== 'search') return;
+        clearTimeout(debounce);
+        debounce = setTimeout(function () { load(buildUrl(1)); }, 400);
+    });
+    form.addEventListener('change', function (event) {
+        if (event.target.type === 'text' || event.target.type === 'search') return;
+        clearTimeout(debounce);
+        load(buildUrl(1));
+    });
+    form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        clearTimeout(debounce);
+        load(buildUrl(1));
+    });
+
+    // Pagination and the per-page select are re-rendered on every load, so bind
+    // once on the container rather than on the controls themselves.
+    pager.addEventListener('click', function (event) {
+        var link = event.target.closest('a[href^="/audit"]');
+        if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+        event.preventDefault();
+        load(link.getAttribute('href'));
+    });
+    pager.addEventListener('change', function (event) {
+        if (!event.target.matches('[data-audit-per-page]')) return;
+        var url = event.target.value;
+        var size = /[?&]per_page=(\d+)/.exec(url);
+        if (size) PER_PAGE = parseInt(size[1], 10);
+        load(url);
+    });
+
+    window.addEventListener('popstate', function () {
+        load(window.location.pathname + window.location.search, {push: false});
+    });
+
+    setInterval(function () {
+        if (document.hidden) return;
+        if (currentPage() !== 1) return;  // older pages don't gain new entries
+        load(currentUrl, {merge: true});
+    }, POLL_INTERVAL_MS);
+})();
+</script>
 {% endblock %}

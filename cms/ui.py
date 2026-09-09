@@ -3195,25 +3195,22 @@ async def event_log_page(
 # ── Audit Log ──
 
 
-@router.get("/audit", response_class=HTMLResponse)
-async def audit_page(
-    request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=10, le=100),
-    q: str = Query(""),
-    action: str = Query(""),
-    user_id: str = Query(""),
-    since: str = Query(""),
-    until: str = Query(""),
-    _user: User = Depends(require_permission("audit:read")),
-    db: AsyncSession = Depends(get_db),
-):
+async def _audit_filter_conditions(
+    tz: ZoneInfo,
+    q: str,
+    action: str,
+    user_id: str,
+    since: str,
+    until: str,
+) -> list:
+    """Build the WHERE clauses for an audit-log query.
+
+    Shared by the full page render and the ``/audit/rows`` fragment so a
+    live update or an in-place filter change can never select a different
+    set of rows than the first paint would have.
+    """
     from cms.models.audit_log import AuditLog
 
-    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
-    tz = ZoneInfo(tz_name)
-
-    # Build filter conditions
     conditions = []
     if q.strip():
         like_q = f"%{q.strip()}%"
@@ -3238,46 +3235,127 @@ async def audit_page(
             conditions.append(
                 json_as_text(AuditLog.details, "actor_username") == uval
             )
-    if since.strip():
+    for raw, op in ((since, "gte"), (until, "lte")):
+        if not raw.strip():
+            continue
         from datetime import datetime as _dt
         try:
-            since_dt = _dt.fromisoformat(since.strip())
-            if since_dt.tzinfo is None:
-                since_dt = since_dt.replace(tzinfo=tz)
-            conditions.append(AuditLog.created_at >= since_dt)
+            bound = _dt.fromisoformat(raw.strip())
         except ValueError:
-            pass
-    if until.strip():
-        from datetime import datetime as _dt
-        try:
-            until_dt = _dt.fromisoformat(until.strip())
-            if until_dt.tzinfo is None:
-                until_dt = until_dt.replace(tzinfo=tz)
-            conditions.append(AuditLog.created_at <= until_dt)
-        except ValueError:
-            pass
+            continue
+        if bound.tzinfo is None:
+            bound = bound.replace(tzinfo=tz)
+        conditions.append(
+            AuditLog.created_at >= bound if op == "gte"
+            else AuditLog.created_at <= bound
+        )
+    return conditions
 
-    # Count with filters
+
+async def _audit_page_data(
+    db: AsyncSession,
+    conditions: list,
+    page: int,
+    per_page: int,
+) -> tuple[list, int, int, int]:
+    """Return ``(entries, total, total_pages, page)`` for one audit page."""
+    from cms.models.audit_log import AuditLog
+
     count_q = select(func.count()).select_from(AuditLog)
     for cond in conditions:
         count_q = count_q.where(cond)
-    count_result = await db.execute(count_q)
-    total = count_result.scalar()
+    total = (await db.execute(count_q)).scalar()
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
 
-    offset = (page - 1) * per_page
     query = (
         select(AuditLog)
         .options(selectinload(AuditLog.user))
         .order_by(AuditLog.created_at.desc())
         .limit(per_page)
-        .offset(offset)
+        .offset((page - 1) * per_page)
     )
     for cond in conditions:
         query = query.where(cond)
-    result = await db.execute(query)
-    entries = result.scalars().all()
+    entries = (await db.execute(query)).scalars().all()
+    return entries, total, total_pages, page
+
+
+@router.get("/audit/rows", response_class=HTMLResponse)
+async def audit_rows_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=100),
+    q: str = Query(""),
+    action: str = Query(""),
+    user_id: str = Query(""),
+    since: str = Query(""),
+    until: str = Query(""),
+    _user: User = Depends(require_permission("audit:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rendered table body + pagination for /audit, without the page chrome.
+
+    Lets the audit page poll for new entries and apply filters in place.
+    It deliberately returns *rendered* rows rather than JSON: the row markup
+    is elaborate (change diffs, friendly detail labels, raw-JSON toggle), and
+    rebuilding it in JavaScript would be a second implementation free to drift
+    from the Jinja one. Both callers render the same partials.
+    """
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+
+    conditions = await _audit_filter_conditions(tz, q, action, user_id, since, until)
+    entries, total, total_pages, page = await _audit_page_data(
+        db, conditions, page, per_page
+    )
+
+    response = templates.TemplateResponse(request, "_audit_fragment.html", {
+        "tz": tz,
+        "entries": entries,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "total": total,
+        "filter_q": q.strip(),
+        "filter_action": action.strip(),
+        "filter_user_id": user_id.strip(),
+        "filter_since": since.strip(),
+        "filter_until": until.strip(),
+        "has_filters": bool(
+            q.strip() or action.strip() or user_id.strip()
+            or since.strip() or until.strip()
+        ),
+    })
+    # The client needs the counts without re-parsing the pagination markup.
+    response.headers["X-Audit-Total"] = str(total)
+    response.headers["X-Audit-Page"] = str(page)
+    response.headers["X-Audit-Total-Pages"] = str(total_pages)
+    return response
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=100),
+    q: str = Query(""),
+    action: str = Query(""),
+    user_id: str = Query(""),
+    since: str = Query(""),
+    until: str = Query(""),
+    _user: User = Depends(require_permission("audit:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from cms.models.audit_log import AuditLog
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+
+    conditions = await _audit_filter_conditions(tz, q, action, user_id, since, until)
+    entries, total, total_pages, page = await _audit_page_data(
+        db, conditions, page, per_page
+    )
 
     # Distinct actions and users for filter dropdowns
     actions_result = await db.execute(
@@ -3332,6 +3410,10 @@ async def audit_page(
         "filter_until": until.strip(),
         "available_actions": available_actions,
         "audit_users": audit_users,
+        "has_filters": bool(
+            q.strip() or action.strip() or user_id.strip()
+            or since.strip() or until.strip()
+        ),
     })
 
 
