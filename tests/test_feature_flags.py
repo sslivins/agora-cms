@@ -403,3 +403,77 @@ class TestStorage:
         # Accepts already-stringified ids too, since the API layer will pass
         # whatever the JSON body produced.
         assert isinstance(uuid.UUID(row.user_ids[0]), uuid.UUID)
+
+
+@pytest.mark.asyncio
+class TestAssistantFlagDeclaration:
+    """The Assistant's move onto the flag system must not change who sees it.
+
+    Before: an empty/absent ``assistant_enabled_user_ids`` setting meant
+    "``settings:write`` holders only"; a populated one meant "those users plus
+    admins".  These pin the equivalent declared behaviour, so a later edit to
+    the registry entry that widens or narrows access fails here rather than in
+    production.  Migration 0062 carries the stored list across; what it cannot
+    encode -- the *absent row* case -- is exactly what the declaration covers.
+    """
+
+    async def test_is_declared_and_permanent(self):
+        flag = ff.REGISTRY["assistant"]
+        # Not a release toggle: there is no date on which the Assistant stops
+        # needing to be restricted, so it must not carry an expiry.
+        assert flag.kind is ff.FlagKind.PERMANENT
+        assert flag.expires is None
+        assert flag.default is ff.FlagState.TARGETED
+        assert flag.include_admins is True
+
+    async def test_with_no_row_admins_see_it_and_others_do_not(self, db_session):
+        admin_role = await _role(db_session, "Admin", [SETTINGS_WRITE])
+        operator_role = await _role(db_session, "Operator", [])
+        admin = await _user(db_session, "admin@example.com", admin_role)
+        operator = await _user(db_session, "op@example.com", operator_role)
+        await db_session.commit()
+
+        assert await ff.enabled(db_session, "assistant", admin) is True
+        assert await ff.enabled(db_session, "assistant", operator) is False
+
+    async def test_targeted_row_grants_the_listed_users(self, db_session):
+        operator_role = await _role(db_session, "Operator", [])
+        listed = await _user(db_session, "listed@example.com", operator_role)
+        other = await _user(db_session, "other@example.com", operator_role)
+        await ff.set_state(
+            db_session,
+            "assistant",
+            state=ff.FlagState.TARGETED,
+            user_ids=[listed.id],
+        )
+        await db_session.commit()
+
+        assert await ff.enabled(db_session, "assistant", listed) is True
+        assert await ff.enabled(db_session, "assistant", other) is False
+
+    async def test_targeted_row_still_includes_admins(self, db_session):
+        # The old code granted admins access alongside a populated allowlist;
+        # migration 0062 writes only the users, so the grant has to come from
+        # ``include_admins`` rather than from the migrated list.
+        admin_role = await _role(db_session, "Admin", [SETTINGS_WRITE])
+        operator_role = await _role(db_session, "Operator", [])
+        admin = await _user(db_session, "admin@example.com", admin_role)
+        listed = await _user(db_session, "listed@example.com", operator_role)
+        await ff.set_state(
+            db_session,
+            "assistant",
+            state=ff.FlagState.TARGETED,
+            user_ids=[listed.id],
+        )
+        await db_session.commit()
+
+        assert await ff.enabled(db_session, "assistant", admin) is True
+
+    async def test_off_hides_it_from_admins_too(self, db_session):
+        # The capability the old allowlist never had: a real kill switch.
+        admin_role = await _role(db_session, "Admin", [SETTINGS_WRITE])
+        admin = await _user(db_session, "admin@example.com", admin_role)
+        await ff.set_state(db_session, "assistant", state=ff.FlagState.OFF)
+        await db_session.commit()
+
+        assert await ff.enabled(db_session, "assistant", admin) is False

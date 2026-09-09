@@ -2741,31 +2741,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssistantSettingsOut'
-  /api/settings/assistant/allowlist:
-    put:
-      tags:
-      - assistant-settings
-      summary: Put Assistant Allowlist
-      operationId: put_assistant_allowlist_api_settings_assistant_allowlist_put
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AssistantAllowlistIn'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AssistantSettingsOut'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/settings/assistant/budget:
     put:
       tags:
@@ -5348,16 +5323,6 @@ components:
       type: object
       title: AssetViewPatch
       description: Request body for ``PATCH /api/asset-views/{id}``. All fields optional.
-    AssistantAllowlistIn:
-      properties:
-        user_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: User Ids
-      type: object
-      title: AssistantAllowlistIn
     AssistantBudgetIn:
       properties:
         default_cap:
@@ -5388,12 +5353,6 @@ components:
         needing to probe a 404 from another endpoint.
     AssistantSettingsOut:
       properties:
-        allowlist:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Allowlist
         default_cap:
           type: integer
           title: Default Cap
@@ -5415,7 +5374,6 @@ components:
           title: Users
       type: object
       required:
-      - allowlist
       - default_cap
       - overrides
       - users

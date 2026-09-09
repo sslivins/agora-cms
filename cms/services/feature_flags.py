@@ -134,8 +134,23 @@ class FlagView:
 #
 # Entries are added by the phase that starts *using* them, so the registry
 # never contains a flag nothing reads.
-
-REGISTRY: dict[str, Flag] = {}
+REGISTRY: dict[str, Flag] = {
+    "assistant": Flag(
+        description=(
+            "The in-CMS Assistant: chat, and tool grounding via MCP. Costs "
+            "money per message, so access is granted deliberately rather than "
+            "switched on for everyone."
+        ),
+        owner="platform",
+        # Not a rollout toggle on its way to "on for everyone" -- limited
+        # access is the intended end state, so it never expires.
+        kind=FlagKind.PERMANENT,
+        # Matches the behaviour this replaces: with nothing configured, the
+        # Assistant was visible to settings:write holders and nobody else.
+        default=FlagState.TARGETED,
+        include_admins=True,
+    ),
+}
 
 
 # ── Evaluation ───────────────────────────────────────────────────────

@@ -663,20 +663,10 @@ async function saveAlertSettings() {
 <div class="card" id="assistant-card">
     <h2>Assistant</h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
-        Controls the in-CMS Assistant (chat + tool grounding via MCP). The
-        feature is gated by a per-user allowlist; admins always have access.
-        Daily token caps protect against runaway LLM spend.
+        Daily token caps for the in-CMS Assistant, protecting against runaway
+        LLM spend. To choose <em>who</em> can use the Assistant, see the
+        <a href="/features">Features</a> tab.
     </p>
-
-    <h3 style="margin-top: 1rem;">Allowlist</h3>
-    <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
-        Users who can see and use the Assistant. Admins (anyone with
-        <code>settings:write</code>) always have access regardless of this list.
-    </p>
-    <div id="assistant-allowlist" style="max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; margin-bottom: 0.5rem;">
-        <span class="text-muted">Loading…</span>
-    </div>
-    <button type="button" class="btn btn-primary" id="assistant-save-allowlist">Save allowlist</button>
 
     <h3 style="margin-top: 1.5rem;">Daily token budget</h3>
     <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
@@ -692,10 +682,12 @@ async function saveAlertSettings() {
 
     <h4 style="margin-top: 1rem;">Per-user overrides</h4>
     <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
-        Override the global cap for individual allowlisted users. Leave the cap
-        blank to remove an override (the user will fall back to the global default).
+        Override the global cap for an individual user. Leave the cap blank to
+        remove an override (the user falls back to the global default). A cap
+        can be set ahead of granting someone access.
     </p>
-    <div id="assistant-overrides" style="border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; margin-bottom: 0.5rem;">
+    <input type="text" id="assistant-override-search" placeholder="Filter users…" style="margin-bottom: 0.4rem;">
+    <div id="assistant-overrides" style="max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; margin-bottom: 0.5rem;">
         <span class="text-muted">Loading…</span>
     </div>
     <button type="button" class="btn btn-primary" id="assistant-save-budget" style="margin-top: 0.5rem;">Save budget</button>
@@ -703,59 +695,39 @@ async function saveAlertSettings() {
 
 <script>
 (function () {
-        const allowlistDiv = document.getElementById("assistant-allowlist");
         const overridesDiv = document.getElementById("assistant-overrides");
         const defaultCapInput = document.getElementById("assistant-default-cap");
         const fallbackSpan = document.getElementById("assistant-cap-fallback");
+        const overrideSearch = document.getElementById("assistant-override-search");
 
-        let state = {users: [], allowlist: [], default_cap: 0, overrides: {}};
+        let state = {users: [], default_cap: 0, overrides: {}};
 
         function userLabel(u) {
             const name = u.display_name || u.username;
             return u.email ? `${name} (${u.email})` : name;
         }
 
-        function renderAllowlist() {
-            const allowSet = new Set(state.allowlist.map(String));
-            allowlistDiv.innerHTML = "";
-            state.users.forEach(u => {
-                const label = document.createElement("label");
-                label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; cursor: pointer;";
-                const cb = document.createElement("input");
-                cb.type = "checkbox";
-                cb.value = u.id;
-                cb.checked = allowSet.has(String(u.id));
-                cb.style.cssText = "width: auto; margin: 0;";
-                cb.dataset.userId = u.id;
-                cb.addEventListener("change", renderOverrides);
-                label.appendChild(cb);
-                const span = document.createElement("span");
-                span.textContent = userLabel(u);
-                label.appendChild(span);
-                allowlistDiv.appendChild(label);
+        function applyOverrideFilter() {
+            const q = (overrideSearch.value || "").trim().toLowerCase();
+            overridesDiv.querySelectorAll("[data-search]").forEach(row => {
+                row.style.display = !q || row.dataset.search.includes(q) ? "" : "none";
             });
         }
 
-        function currentAllowlist() {
-            return Array.from(allowlistDiv.querySelectorAll("input[type=checkbox]:checked"))
-                .map(cb => cb.dataset.userId);
-        }
-
         function renderOverrides() {
-            const allowed = new Set(currentAllowlist());
             overridesDiv.innerHTML = "";
-            const visible = state.users.filter(u => allowed.has(String(u.id)));
-            if (visible.length === 0) {
+            if (state.users.length === 0) {
                 const p = document.createElement("p");
                 p.className = "text-muted";
                 p.style.margin = "0";
-                p.textContent = "No allowlisted users — toggle some above to add per-user overrides.";
+                p.textContent = "No active users.";
                 overridesDiv.appendChild(p);
                 return;
             }
-            visible.forEach(u => {
+            state.users.forEach(u => {
                 const row = document.createElement("div");
                 row.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0;";
+                row.dataset.search = userLabel(u).toLowerCase();
                 const lbl = document.createElement("span");
                 lbl.textContent = userLabel(u);
                 lbl.style.cssText = "flex: 1;";
@@ -771,7 +743,10 @@ async function saveAlertSettings() {
                 row.appendChild(input);
                 overridesDiv.appendChild(row);
             });
+            applyOverrideFilter();
         }
+
+        overrideSearch.addEventListener("input", applyOverrideFilter);
 
         async function loadState() {
             try {
@@ -782,32 +757,11 @@ async function saveAlertSettings() {
                 if (state.default_cap_fallback != null) {
                     fallbackSpan.textContent = state.default_cap_fallback;
                 }
-                renderAllowlist();
                 renderOverrides();
             } catch (err) {
-                allowlistDiv.innerHTML = `<span class="text-muted">${err.message || "Load failed"}</span>`;
+                overridesDiv.innerHTML = `<span class="text-muted">${err.message || "Load failed"}</span>`;
             }
         }
-
-        document.getElementById("assistant-save-allowlist").addEventListener("click", async () => {
-            const user_ids = currentAllowlist();
-            try {
-                const resp = await fetch("/api/settings/assistant/allowlist", {
-                    method: "PUT",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({user_ids}),
-                });
-                if (!resp.ok) {
-                    const data = await resp.json().catch(() => ({}));
-                    throw new Error((data.detail && data.detail.message) || data.detail || "Save failed");
-                }
-                state = await resp.json();
-                showToast(`Allowlist saved (${user_ids.length} users)`);
-                renderOverrides();
-            } catch (err) {
-                showToast(err.message || "Failed to save allowlist", true);
-            }
-        });
 
         document.getElementById("assistant-save-budget").addEventListener("click", async () => {
             const default_cap = parseInt(defaultCapInput.value, 10);

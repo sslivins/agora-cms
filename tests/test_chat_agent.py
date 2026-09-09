@@ -245,7 +245,7 @@ class TestPostMessageHTTP:
     ):
         # Allowlist the operator so its create call succeeds, then have
         # admin try to post a message to the operator's thread.
-        from cms.services.assistant_flag import set_allowlist
+        from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
         from cms.database import get_db
 
         factory = app.dependency_overrides[get_db]
@@ -283,7 +283,7 @@ class TestPostMessageHTTP:
     ):
         # Operator with no allowlist entry should see a 404 on the
         # message endpoint just like the rest of the surface.
-        from cms.services.assistant_flag import set_allowlist
+        from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
         from cms.database import get_db
 
         factory = app.dependency_overrides[get_db]

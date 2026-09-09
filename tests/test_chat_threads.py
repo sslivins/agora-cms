@@ -17,7 +17,7 @@ from sqlalchemy import select
 async def _enable_for(app, user_id: uuid.UUID) -> None:
     """Set the assistant allowlist to exactly ``[user_id]``."""
     from cms.database import get_db
-    from cms.services.assistant_flag import set_allowlist
+    from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
 
     factory = app.dependency_overrides[get_db]
     async for db in factory():
@@ -28,7 +28,7 @@ async def _enable_for(app, user_id: uuid.UUID) -> None:
 async def _disable_all(app) -> None:
     """Clear the assistant allowlist."""
     from cms.database import get_db
-    from cms.services.assistant_flag import set_allowlist
+    from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
 
     factory = app.dependency_overrides[get_db]
     async for db in factory():
@@ -74,18 +74,19 @@ class TestAssistantFeatureFlag:
         assert listing.status_code == 200
         assert listing.json() == []
 
-    async def test_malformed_allowlist_setting_is_treated_as_empty(
+    async def test_unrecognised_stored_state_is_treated_as_the_default(
         self, operator_client, app
     ):
-        # Persist a deliberately broken value and confirm the operator
-        # still sees the feature as disabled (no 500s into the router).
-        from cms.auth import set_setting
+        # A row whose state string the code doesn't recognise (a downgrade
+        # after a new state was added, say) must fall back to the declared
+        # default rather than 500 the router.
         from cms.database import get_db
-        from cms.services.assistant_flag import ASSISTANT_FLAG_KEY
+        from cms.models.feature_flag import FeatureFlagState
 
         factory = app.dependency_overrides[get_db]
         async for db in factory():
-            await set_setting(db, ASSISTANT_FLAG_KEY, "not json")
+            db.add(FeatureFlagState(name="assistant", state="not-a-state"))
+            await db.commit()
             break
 
         resp = await operator_client.get("/api/chat/feature")
@@ -157,48 +158,3 @@ class TestChatThreadCRUD:
     async def test_delete_unknown_thread_404(self, client):
         resp = await client.delete(f"/api/chat/threads/{uuid.uuid4()}")
         assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-class TestAllowlistService:
-    """Direct unit-style checks against the service layer (no HTTP)."""
-
-    async def test_set_and_get_round_trip(self, app):
-        from cms.database import get_db
-        from cms.services.assistant_flag import (
-            ASSISTANT_FLAG_KEY,
-            get_allowlist,
-            set_allowlist,
-        )
-        from cms.auth import get_setting
-
-        u1, u2 = uuid.uuid4(), uuid.uuid4()
-        factory = app.dependency_overrides[get_db]
-        async for db in factory():
-            await set_allowlist(db, [u1, u2, u1])  # de-duped
-            got = await get_allowlist(db)
-            assert got == [u1, u2]
-            raw = await get_setting(db, ASSISTANT_FLAG_KEY)
-            assert raw is not None
-            assert json.loads(raw) == [str(u1), str(u2)]
-            break
-
-    async def test_invalid_uuids_in_setting_are_dropped(self, app):
-        from cms.auth import set_setting
-        from cms.database import get_db
-        from cms.services.assistant_flag import (
-            ASSISTANT_FLAG_KEY,
-            get_allowlist,
-        )
-
-        u1 = uuid.uuid4()
-        factory = app.dependency_overrides[get_db]
-        async for db in factory():
-            await set_setting(
-                db,
-                ASSISTANT_FLAG_KEY,
-                json.dumps([str(u1), "not-a-uuid", 42]),
-            )
-            got = await get_allowlist(db)
-            assert got == [u1]
-            break

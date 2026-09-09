@@ -14,7 +14,7 @@ import pytest
 
 async def _enable_for(app, user_id: uuid.UUID) -> None:
     from cms.database import get_db
-    from cms.services.assistant_flag import set_allowlist
+    from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
     factory = app.dependency_overrides[get_db]
     async for db in factory():
         await set_allowlist(db, [user_id])
@@ -23,7 +23,7 @@ async def _enable_for(app, user_id: uuid.UUID) -> None:
 
 async def _disable_all(app) -> None:
     from cms.database import get_db
-    from cms.services.assistant_flag import set_allowlist
+    from tests.assistant_helpers import set_assistant_allowlist as set_allowlist
     factory = app.dependency_overrides[get_db]
     async for db in factory():
         await set_allowlist(db, [])
