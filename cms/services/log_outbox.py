@@ -181,6 +181,41 @@ async def mark_failed(
     return (result.rowcount or 0) > 0
 
 
+async def record_error(
+    db: AsyncSession,
+    request_id: str,
+    *,
+    error: str,
+) -> bool:
+    """Attach a diagnostic message to a non-terminal row **without**
+    changing its status.
+
+    Used when a reply arrives but processing it fails (see the
+    ``LOGS_RESPONSE`` handler in :mod:`cms.services.device_inbound`).
+    Deliberately *not* ``mark_failed``: the cause is often transient —
+    a blob-storage hiccup, a momentary DB blip — and the drainer's
+    stuck-``sent`` rescue will retry the request.  Terminating the row
+    here would turn a recoverable stall into an error the user has to
+    resolve by clicking "Get Logs" again.  Persistent failures still
+    reach ``failed`` once ``attempts`` exhausts the retry budget, and
+    now carry a message explaining why.
+
+    Returns ``True`` iff a row was updated.
+    """
+    result = await db.execute(
+        update(LogRequest)
+        .where(
+            LogRequest.id == request_id,
+            LogRequest.status.notin_(list(TERMINAL_STATUSES)),
+        )
+        .values(
+            last_error=error[:2000] if error else None,
+            updated_at=_now(),
+        )
+    )
+    return (result.rowcount or 0) > 0
+
+
 async def mark_expired(
     db: AsyncSession,
     request_id: str,

@@ -240,10 +240,17 @@ async def drain_once(
         )
         for row in stuck_rows:
             if row.attempts >= max_attempts:
+                # Preserve whatever cause was recorded on the row (#889)
+                # — otherwise the generic timeout text overwrites the
+                # real explanation at exactly the point an operator
+                # goes looking for it.
+                detail = f"sent timeout after {row.attempts} attempts"
+                if row.last_error:
+                    detail = f"{detail} (last error: {row.last_error})"
                 await log_outbox.mark_failed(
                     db,
                     row.id,
-                    error=f"sent timeout after {row.attempts} attempts",
+                    error=detail,
                 )
                 stats["failed"] += 1
             else:

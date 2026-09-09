@@ -683,11 +683,36 @@ async def dispatch_device_message(
                             blob_path=blob_path, size_bytes=len(payload),
                         )
                         await db.commit()
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "LOGS_RESPONSE outbox write failed for request %s (device %s)",
                     request_id, device_id, exc_info=True,
                 )
+                # Record the cause on the row (#889).  Without this the
+                # request sits in ``sent`` with ``last_error`` unset until
+                # the drainer's stuck-sent rescue picks it up ~15 min
+                # later, so the user's spinner neither resolves nor errors
+                # and nothing explains why.  The status is deliberately
+                # left alone so that rescue still retries.
+                #
+                # A DB-level failure above leaves the session needing a
+                # rollback, which would swallow this write too — so roll
+                # back first.  Re-import defensively: the imports at the
+                # top of the ``try`` are themselves inside it.
+                try:
+                    await db.rollback()
+                    from cms.services import log_outbox as _log_outbox
+
+                    await _log_outbox.record_error(
+                        db, request_id,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    await db.commit()
+                except Exception:
+                    logger.exception(
+                        "LOGS_RESPONSE could not record failure for request %s",
+                        request_id,
+                    )
 
     elif msg_type == MessageType.LIFECYCLE_EVENT:
         # OTA lifecycle event from the device (issue agora-cms#574 /

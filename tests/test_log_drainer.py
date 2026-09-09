@@ -336,6 +336,36 @@ async def test_drainer_fails_stuck_sent_over_max_attempts(db_session, _device):
 
 
 @pytest.mark.asyncio
+async def test_stuck_sent_failure_preserves_the_recorded_cause(db_session, _device):
+    """#889 — when the LOGS_RESPONSE handler records why processing the
+    reply failed, giving up must not overwrite that with the generic
+    timeout text."""
+    settings = _make_settings(log_drainer_max_attempts=5)
+    row = await log_outbox.create(db_session, device_id=_device.id)
+    await db_session.commit()
+
+    now = datetime.now(timezone.utc)
+    await _set_row(
+        db_session, row.id,
+        status=STATUS_SENT,
+        attempts=settings.log_drainer_max_attempts,
+        sent_at=now - timedelta(minutes=30),
+        updated_at=now - timedelta(minutes=30),
+        last_error="RuntimeError: blob backend unavailable",
+    )
+
+    transport = FakeTransport()
+    await log_drainer.drain_once(
+        db_session, transport=transport, settings=settings, now=now,
+    )
+
+    refreshed = await _reload(db_session, row.id)
+    assert refreshed.status == STATUS_FAILED
+    assert "blob backend unavailable" in refreshed.last_error
+    assert "sent timeout" in refreshed.last_error
+
+
+@pytest.mark.asyncio
 async def test_drainer_batch_size_caps_work(db_session, _device):
     ids: list[str] = []
     for _ in range(30):
