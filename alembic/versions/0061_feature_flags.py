@@ -53,7 +53,7 @@ def upgrade() -> None:
             "updated_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=sa.func.current_timestamp(),
         ),
         # SET NULL, not CASCADE: deleting the admin who flipped a flag must not
         # delete the flag with them.
