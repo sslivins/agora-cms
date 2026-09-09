@@ -2791,6 +2791,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/features:
+    get:
+      tags:
+      - features
+      summary: List Features
+      operationId: list_features_api_features_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeaturesOut'
+  /api/features/{name}:
+    put:
+      tags:
+      - features
+      summary: Set Feature State
+      operationId: set_feature_state_api_features__name__put
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagStateIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeaturesOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
       summary: List Profiles
@@ -6601,6 +6646,117 @@ components:
       - url
       title: DownloadUrlOut
       description: Response body for :http:get:`/api/imager/download-url/{job_id}`.
+    FeaturesOut:
+      properties:
+        flags:
+          items:
+            $ref: '#/components/schemas/FlagOut'
+          type: array
+          title: Flags
+        users:
+          items:
+            $ref: '#/components/schemas/UserCatalogEntry'
+          type: array
+          title: Users
+        roles:
+          items:
+            $ref: '#/components/schemas/RoleCatalogEntry'
+          type: array
+          title: Roles
+      type: object
+      required:
+      - flags
+      - users
+      - roles
+      title: FeaturesOut
+    FlagOut:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        owner:
+          type: string
+          title: Owner
+        kind:
+          type: string
+          title: Kind
+        state:
+          type: string
+          title: State
+        user_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: User Ids
+        role_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Role Ids
+        expires:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Expires
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
+        is_overdue:
+          type: boolean
+          title: Is Overdue
+          default: false
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+        updated_by_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Updated By Id
+        include_admins:
+          type: boolean
+          title: Include Admins
+          default: false
+      type: object
+      required:
+      - name
+      - description
+      - owner
+      - kind
+      - state
+      title: FlagOut
+    FlagStateIn:
+      properties:
+        state:
+          type: string
+          title: State
+        user_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: User Ids
+        role_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Role Ids
+      type: object
+      required:
+      - state
+      title: FlagStateIn
     FleetCreateBody:
       properties:
         fleet_id:
@@ -7322,6 +7478,25 @@ components:
       - number
       - html_url
       title: ReportIssueResponse
+    RoleCatalogEntry:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      type: object
+      required:
+      - id
+      - name
+      title: RoleCatalogEntry
     RoleCreate:
       properties:
         name:
@@ -7741,6 +7916,30 @@ components:
       required:
       - enabled
       title: ToggleRequest
+    UserCatalogEntry:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        username:
+          type: string
+          title: Username
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+      type: object
+      required:
+      - id
+      - username
+      title: UserCatalogEntry
     UserCreate:
       properties:
         email:
@@ -7958,5 +8157,6 @@ tags:
 - name: composed
 - name: devices (device-originated)
   description: Endpoints called by the device firmware itself.
+- name: features
 - name: system
   description: Health checks and system endpoints.
