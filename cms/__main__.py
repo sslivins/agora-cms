@@ -26,7 +26,7 @@ import getpass
 import secrets
 import sys
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from cms.auth import get_settings, hash_password
 from cms.database import init_db, get_session_factory, wait_for_db, dispose_db
@@ -63,8 +63,10 @@ async def _reset_password(email: str, new_password: str) -> int:
         factory = get_session_factory()
         async with factory() as db:
             user = (
-                await db.execute(select(User).where(User.email == email))
-            ).scalar_one_or_none()
+                await db.execute(
+                    select(User).where(func.lower(User.email) == email.strip().lower())
+                )
+            ).scalars().first()
             if user is None:
                 print(f"error: no user found with email {email!r}", file=sys.stderr)
                 return 1

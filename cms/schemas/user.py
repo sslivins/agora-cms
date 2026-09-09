@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from cms.models.user import normalize_email
 
 
 # ── Role schemas ──
@@ -44,6 +46,8 @@ class UserCreate(BaseModel):
     role_id: uuid.UUID
     group_ids: list[uuid.UUID] = Field(default_factory=list)
 
+    _normalize_email = field_validator("email")(normalize_email)
+
 
 class UserUpdate(BaseModel):
     email: str | None = Field(None, min_length=3, max_length=255)
@@ -53,6 +57,11 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
     must_change_password: bool | None = None
     group_ids: list[uuid.UUID] | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_email(value)
 
 
 class UserRead(BaseModel):

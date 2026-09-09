@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, column, func
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,23 @@ SETUP_TOKEN_TTL = timedelta(days=7)
 # across the industry (GitHub, Django's default PasswordResetTokenGenerator
 # day-scale notwithstanding, most SaaS reset links sit at 15 min – 1 h).
 RESET_TOKEN_TTL = timedelta(hours=1)
+
+
+def normalize_email(value: str) -> str:
+    """Fold an address to its canonical stored form.
+
+    RFC 5321 makes the domain part case-insensitive and, while the local part
+    is technically case-sensitive, the same RFC advises against relying on
+    that -- every mainstream provider ignores case. Storing one canonical
+    casing means a plain ``==`` lookup can never miss the row again, which is
+    what let an account created as ``Mia.Amaranto@...`` reject that same
+    person typing her address in lowercase (the audit log recorded
+    ``user_not_found``).
+
+    Lookups still compare case-folded on both sides rather than relying on
+    this alone, so rows written before normalisation keep working.
+    """
+    return (value or "").strip().lower()
 
 
 def setup_token_is_expired(user: "User", *, now: datetime | None = None) -> bool:
@@ -91,7 +108,15 @@ class Role(Base):
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        # Case-insensitive uniqueness. Emails are case-insensitive in
+        # practice, and usernames are derived from the email local part, so
+        # both must fold -- otherwise the case-folded login lookup could match
+        # two rows. See migration 0060.
+        Index("uq_users_email_lower", func.lower(column("email")), unique=True),
+        Index("uq_users_username_lower", func.lower(column("username")), unique=True),
+        {"extend_existing": True},
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
