@@ -128,6 +128,16 @@ param azureOpenAIChatModelVersion string = '2024-11-20'
 @description('TPM capacity for the chat deployment, in thousands (30 = 30k TPM). Phase-1 default of 30 is generous for a single-org pilot.')
 param azureOpenAIChatCapacity int = 30
 
+// ── Voice Announcements backend (Azure AI Speech) ──
+@description('When true, deploy an Azure AI Speech account and wire its endpoint/region into the CMS + worker containers. Safe to leave false in environments that are not opted in yet — no runtime code path uses it until Voice Announcements UI/API land.')
+param deployAzureSpeech bool = false
+
+@description('Azure region for the Azure AI Speech account when deployAzureSpeech=true. Defaults to the RG location; override when the RG region lacks the desired MAI-Voice-2 preview availability.')
+param azureSpeechRegion string = ''
+
+@description('SKU for the Azure AI Speech account. S0 is required for neural / MAI voices.')
+param azureSpeechSku string = 'S0'
+
 var tags = {
   project: 'agora-cms'
   managedBy: 'bicep'
@@ -144,6 +154,7 @@ var mcpAppName = '${prefix}-mcp'
 var workerJobName = '${prefix}-worker'
 var webPubSubName = '${prefix}-cms-wps'
 var azureOpenAIAccountName = '${prefix}-aoai'
+var azureSpeechAccountName = '${prefix}-speech'
 
 // ── Networking ──
 module networking 'modules/networking.bicep' = {
@@ -226,6 +237,20 @@ module azureOpenAI 'modules/azureOpenAI.bicep' = if (deployAzureOpenAI) {
   }
 }
 
+// ── Azure AI Speech (Voice Announcements backend) ──
+// Optional: only deployed when deployAzureSpeech=true. Account
+// region defaults to the RG region; override via azureSpeechRegion
+// when the RG region lacks the desired preview voice availability.
+module azureSpeech 'modules/azureSpeech.bicep' = if (deployAzureSpeech) {
+  name: 'azureSpeech'
+  params: {
+    location: empty(azureSpeechRegion) ? location : azureSpeechRegion
+    accountName: azureSpeechAccountName
+    sku: azureSpeechSku
+    tags: tags
+  }
+}
+
 // ── Build database connection string ──
 // URL-encode the '@' in the password so asyncpg parses the URL correctly
 var encodedPassword = replace(postgresAdminPassword, '@', '%40')
@@ -293,9 +318,11 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Azure OpenAI (Assistant feature). Empty when not deployed —
     // CMS treats empty endpoint as "feature disabled" at runtime.
-    azureOpenAIEndpoint: deployAzureOpenAI ? azureOpenAI.outputs.endpoint : ''
-    azureOpenAIDeployment: deployAzureOpenAI ? azureOpenAI.outputs.deploymentName : ''
+    azureOpenAIEndpoint: deployAzureOpenAI ? azureOpenAI!.outputs.endpoint : ''
+    azureOpenAIDeployment: deployAzureOpenAI ? azureOpenAI!.outputs.deploymentName : ''
     azureOpenAIModel: deployAzureOpenAI ? azureOpenAIChatModel : ''
+    azureSpeechEndpoint: deployAzureSpeech ? azureSpeech!.outputs.endpoint : ''
+    azureSpeechRegion: deployAzureSpeech ? azureSpeech!.outputs.location : ''
   }
 }
 
@@ -310,11 +337,41 @@ resource existingAzureOpenAI 'Microsoft.CognitiveServices/accounts@2024-10-01' e
 }
 
 resource cmsAzureOpenAIRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAzureOpenAI && deployRoleAssignments) {
-  name: guid(existingAzureOpenAI.id, cmsAppName, '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+  name: guid(existingAzureOpenAI!.id, cmsAppName, '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
   scope: existingAzureOpenAI
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
     principalId: containerApps.outputs.cmsPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Azure AI Speech RBAC ──
+// Grant the CMS container app's and worker job's managed identities
+// the 'Cognitive Services Speech User' role on the Speech account so
+// Voice Announcements can synthesize via DefaultAzureCredential, no
+// keys required. Role guid f2dc8367-1007-4938-bd23-fe263f013447 is the
+// built-in 'Cognitive Services Speech User' definition.
+resource existingAzureSpeech 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAzureSpeech) {
+  name: azureSpeechAccountName
+}
+
+resource cmsAzureSpeechRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAzureSpeech && deployRoleAssignments) {
+  name: guid(existingAzureSpeech!.id, cmsAppName, 'f2dc8367-1007-4938-bd23-fe263f013447')
+  scope: existingAzureSpeech
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f2dc8367-1007-4938-bd23-fe263f013447')
+    principalId: containerApps.outputs.cmsPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource workerAzureSpeechRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAzureSpeech && deployRoleAssignments) {
+  name: guid(existingAzureSpeech!.id, workerJobName, 'f2dc8367-1007-4938-bd23-fe263f013447')
+  scope: existingAzureSpeech
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f2dc8367-1007-4938-bd23-fe263f013447')
+    principalId: containerApps.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -355,7 +412,7 @@ resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 module webPubSubHub 'modules/webPubSubHub.bicep' = if (deviceTransport == 'wps') {
   name: 'webPubSubHub'
   params: {
-    webPubSubName: webPubSub.outputs.name
+    webPubSubName: webPubSub!.outputs.name
     hubName: 'agora'
     cmsFqdn: '${cmsAppName}.${containerApps.outputs.environmentDefaultDomain}'
   }
@@ -385,5 +442,7 @@ output mcpLatestRevisionName string = containerApps.outputs.mcpLatestRevisionNam
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output keyVaultUri string = keyVault.outputs.keyVaultUri
 output storageAccountName string = storage.outputs.storageAccountName
-output azureOpenAIEndpoint string = deployAzureOpenAI ? azureOpenAI.outputs.endpoint : ''
-output azureOpenAIDeployment string = deployAzureOpenAI ? azureOpenAI.outputs.deploymentName : ''
+output azureOpenAIEndpoint string = deployAzureOpenAI ? azureOpenAI!.outputs.endpoint : ''
+output azureOpenAIDeployment string = deployAzureOpenAI ? azureOpenAI!.outputs.deploymentName : ''
+output azureSpeechEndpoint string = deployAzureSpeech ? azureSpeech!.outputs.endpoint : ''
+output azureSpeechRegion string = deployAzureSpeech ? azureSpeech!.outputs.location : ''

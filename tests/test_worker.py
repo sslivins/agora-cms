@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device_profile import DeviceProfile
+from cms.models.voice_announcement import VoiceAnnouncement
+from shared.models.job import JobStatus
 
 
 # ── Helpers ──
@@ -640,6 +642,125 @@ class TestTranscodeOneVideoSuccess:
         args_str = " ".join(str(a) for a in captured_args)
         assert "originals" in args_str
         assert "video_original.mov" in args_str
+
+
+@pytest.mark.asyncio
+class TestVoiceSynthesisById:
+    """Direct voice-synthesis handler tests with a mocked Speech client."""
+
+    async def test_succeeds_and_updates_asset_and_voice_row(
+        self, db_engine, db_session, tmp_path
+    ):
+        from worker.voice_synthesis import synthesize_voice_announcement_by_id
+
+        asset = Asset(
+            filename="announcement-success.ogg",
+            asset_type=AssetType.VOICE_ANNOUNCEMENT,
+            size_bytes=0,
+            checksum="",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        voice = VoiceAnnouncement(
+            asset_id=asset.id,
+            script_text="Attention shoppers",
+            voice_name="en-US-Ava:MAI-Voice-2",
+            language="en-US",
+            generation_status=JobStatus.PENDING,
+        )
+        db_session.add(voice)
+        await db_session.commit()
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        asset_dir = tmp_path / "assets"
+        asset_dir.mkdir()
+
+        class _FakeSpeechClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def synthesize(self, *args, **kwargs):
+                return b"fake-voice-audio"
+
+        mock_storage = MagicMock()
+        mock_storage.on_file_stored = AsyncMock()
+
+        with patch("worker.voice_synthesis.WorkerSettings", return_value=MagicMock()), \
+             patch("worker.voice_synthesis.SpeechClient", return_value=_FakeSpeechClient()), \
+             patch("worker.voice_synthesis.probe_media", return_value={"duration_seconds": 12.5}), \
+             patch("worker.voice_synthesis.get_storage", return_value=mock_storage):
+            ok = await synthesize_voice_announcement_by_id(factory, asset_dir, asset.id)
+
+        assert ok is True
+        await db_session.refresh(asset)
+        await db_session.refresh(voice)
+        assert voice.generation_status == JobStatus.DONE
+        assert voice.generation_error is None
+        assert voice.last_generated_at is not None
+        assert asset.size_bytes == len(b"fake-voice-audio")
+        assert asset.checksum
+        assert asset.duration_seconds == 12.5
+        assert asset.audio_codec == "opus"
+        assert (asset_dir / asset.filename).read_bytes() == b"fake-voice-audio"
+        mock_storage.on_file_stored.assert_awaited_once_with(asset.filename)
+
+    async def test_failure_marks_voice_row_failed_and_cleans_up_output(
+        self, db_engine, db_session, tmp_path
+    ):
+        from worker.voice_synthesis import synthesize_voice_announcement_by_id
+
+        asset = Asset(
+            filename="announcement-fail.ogg",
+            asset_type=AssetType.VOICE_ANNOUNCEMENT,
+            size_bytes=0,
+            checksum="",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        voice = VoiceAnnouncement(
+            asset_id=asset.id,
+            script_text="Attention shoppers",
+            voice_name="en-US-Ava:MAI-Voice-2",
+            language="en-US",
+            generation_status=JobStatus.PENDING,
+        )
+        db_session.add(voice)
+        await db_session.commit()
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        asset_dir = tmp_path / "assets"
+        asset_dir.mkdir()
+
+        class _ExplodingSpeechClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def synthesize(self, *args, **kwargs):
+                raise RuntimeError("speech backend unavailable")
+
+        with patch("worker.voice_synthesis.WorkerSettings", return_value=MagicMock()), \
+             patch("worker.voice_synthesis.SpeechClient", return_value=_ExplodingSpeechClient()):
+            ok = await synthesize_voice_announcement_by_id(factory, asset_dir, asset.id)
+
+        assert ok is False
+        await db_session.refresh(asset)
+        await db_session.refresh(voice)
+        assert voice.generation_status == JobStatus.FAILED
+        assert "speech backend unavailable" in (voice.generation_error or "")
+        assert voice.last_generated_at is None
+        assert asset.size_bytes == 0
+        assert asset.checksum == ""
+        assert asset.duration_seconds is None
+        assert asset.audio_codec is None
+        assert not (asset_dir / asset.filename).exists()
 
 
 # ── _queue_mode tests ──
