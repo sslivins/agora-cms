@@ -36,16 +36,15 @@ def _uuid_type(bind):
     return sa.String(length=36)
 
 
-def _job_status_enum():
-    return sa.Enum(
-        "PENDING",
-        "PROCESSING",
-        "DONE",
-        "FAILED",
-        "CANCELLED",
-        name="jobstatus",
-        create_type=False,
-    )
+def _job_status_enum(bind):
+    values = ("PENDING", "PROCESSING", "DONE", "FAILED", "CANCELLED")
+    if bind.dialect.name == "postgresql":
+        return sa.dialects.postgresql.ENUM(
+            *values,
+            name="jobstatus",
+            create_type=False,
+        )
+    return sa.Enum(*values, name="jobstatus")
 
 
 def upgrade() -> None:
@@ -80,7 +79,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "generation_status",
-            _job_status_enum(),
+            _job_status_enum(bind),
             nullable=False,
             server_default="PENDING",
         ),
