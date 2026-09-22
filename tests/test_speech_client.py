@@ -82,7 +82,7 @@ async def test_synthesize_builds_expected_ssml_and_headers():
 
     assert data == b"fake-ogg-audio"
     assert seen["url"] == (
-        "https://example.cognitiveservices.azure.com/cognitiveservices/v1"
+        "https://example.cognitiveservices.azure.com/tts/cognitiveservices/v1"
     )
     headers = httpx.Headers(seen["headers"])
     assert headers["Authorization"] == "Bearer fake-token"

@@ -172,8 +172,10 @@ class SpeechClient:
         # regional endpoint (e.g. https://westus.tts.speech.microsoft.com)
         # only accepts subscription-key auth and returns 401 for bearer
         # tokens, even when the token/RBAC grant is otherwise valid.
+        # Both TTS REST paths are served under the ``/tts`` prefix on the
+        # custom-domain host; omitting it returns a bare 404.
         custom_domain = settings.azure_speech_endpoint.rstrip("/")
-        self._synthesis_url = f"{custom_domain}/cognitiveservices/v1"
+        self._synthesis_url = f"{custom_domain}/tts/cognitiveservices/v1"
         self._voices_url = f"{custom_domain}/tts/cognitiveservices/voices/list"
 
     async def aclose(self) -> None:
