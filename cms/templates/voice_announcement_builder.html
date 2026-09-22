@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{% if edit_mode %}Edit{% else %}New{% endif %} Voice Announcement — Agora CMS{% endblock %}
 {% block content %}
-<h1>{% if edit_mode %}Edit Voice Announcement{% else %}New Voice Announcement{% endif %}{% if asset_name %} — <span id="voice-builder-title">{{ asset_name }}</span>{% endif %}</h1>
+<h1>{% if edit_mode %}Edit Voice Announcement{% else %}New Voice Announcement{% endif %}{% if asset_name %} — <span id="voice-builder-title">{{ asset_name }}</span>{% endif %}<span id="voice-dirty-indicator" hidden
+          style="font-size:0.75rem; color:#e67e22; font-weight:normal; margin-left:0.5rem; vertical-align:middle;"
+          title="You have unsaved changes">● unsaved</span></h1>
 <div class="sub-tabs">
     <a href="{% if edit_mode %}/assets{% else %}/assets/new{% endif %}" class="sub-tab">← Back to Assets</a>
 </div>
@@ -86,22 +88,32 @@
             </div>
         </div>
 
-        <div class="voice-builder-actions">
-            <button type="button" class="btn btn-secondary" id="voice-preview-btn" {% if not speech_available %}disabled{% endif %}>Preview</button>
-            <button type="submit" class="btn btn-primary" id="voice-save-btn" {% if not speech_available %}disabled{% endif %}>
+        <!-- The tuning loop. Preview lives with the voice controls it
+             exercises and is deliberately kept far from the commit action
+             in the footer below, so the cheap, repeated action and the
+             terminal one are never adjacent. -->
+        <div class="voice-preview-panel">
+            <div class="voice-preview-head">
+                <button type="button" class="btn btn-secondary" id="voice-preview-btn" disabled>▶ Preview</button>
+                <span id="voice-preview-meta" class="text-muted voice-preview-meta"></span>
+            </div>
+            <audio id="voice-preview-audio" controls preload="none" class="voice-preview-audio" hidden></audio>
+            <p class="text-muted voice-preview-hint">
+                Previews are generated on the fly and are not saved. Try a few
+                voices and emotions here, then create the announcement below.
+            </p>
+        </div>
+
+        <hr class="voice-builder-sep">
+
+        <div class="voice-builder-footer">
+            <a href="{% if edit_mode %}/assets{% else %}/assets/new{% endif %}" class="btn btn-secondary" id="voice-cancel-btn">Cancel</a>
+            <span id="voice-progress-text" class="text-muted voice-progress-text" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" id="voice-save-btn" disabled>
                 {% if edit_mode %}Save Changes{% else %}Create Announcement{% endif %}
             </button>
-            <span id="voice-progress-text" class="text-muted" aria-live="polite"></span>
         </div>
     </form>
-
-    <div id="voice-preview-wrap" class="voice-preview-wrap" hidden>
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap;">
-            <strong>Preview</strong>
-            <span id="voice-preview-meta" class="text-muted" style="font-size:0.85rem;"></span>
-        </div>
-        <audio id="voice-preview-audio" controls preload="none" style="width:100%; margin-top:0.5rem;"></audio>
-    </div>
 </div>
 
 <style>
@@ -115,18 +127,44 @@
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: 1rem;
     }
-    .voice-builder-actions {
+    .voice-preview-panel {
+        padding: 0.85rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-alt);
+    }
+    .voice-preview-head {
         display: flex;
         align-items: center;
         gap: 0.75rem;
         flex-wrap: wrap;
     }
-    .voice-preview-wrap {
-        margin-top: 1rem;
-        padding: 0.85rem 1rem;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        background: var(--surface-alt);
+    .voice-preview-meta {
+        font-size: 0.85rem;
+    }
+    .voice-preview-audio {
+        width: 100%;
+        margin-top: 0.75rem;
+    }
+    .voice-preview-hint {
+        margin: 0.6rem 0 0;
+        font-size: 0.8rem;
+    }
+    .voice-builder-sep {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 0;
+    }
+    /* Cancel sits hard left; the progress text and the single primary
+       action are pushed to the right, well away from Preview. */
+    .voice-builder-footer {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+    .voice-builder-footer .voice-progress-text {
+        margin-left: auto;
     }
 </style>
 
@@ -138,6 +176,7 @@
     const INITIAL_VOICE_NAME = {{ voice_name | tojson }};
     const INITIAL_EMOTION = {{ emotion | tojson }};
     const INITIAL_RATE = {{ speech_rate | tojson }};
+    const SPEECH_AVAILABLE = {{ speech_available | tojson }};
 
     const form = document.getElementById("voice-builder-form");
     const statusEl = document.getElementById("voice-builder-status");
@@ -152,13 +191,56 @@
     const rateSelect = document.getElementById("voice-rate");
     const previewBtn = document.getElementById("voice-preview-btn");
     const saveBtn = document.getElementById("voice-save-btn");
-    const previewWrap = document.getElementById("voice-preview-wrap");
     const previewAudio = document.getElementById("voice-preview-audio");
     const previewMeta = document.getElementById("voice-preview-meta");
+    const dirtyIndicator = document.getElementById("voice-dirty-indicator");
 
     let previewUrl = null;
     let voices = [];
     let statusPollTimer = null;
+    // A preview or save request is in flight; both actions stay disabled
+    // until it settles, regardless of form validity.
+    let busy = false;
+    // Set false when the server reports speech is unavailable, either at
+    // render time or from the live voice-list probe.
+    let speechReady = SPEECH_AVAILABLE;
+    // Where to go once a save completes. Normally the asset library, but
+    // the unsaved-changes modal's "Save" redirects to wherever the user
+    // was trying to navigate.
+    let pendingRedirect = "/assets";
+    let dirty = false;
+
+    // ── action gating ──
+    //
+    // Every enable/disable decision funnels through here so the separate
+    // code paths (voice load, preview, save, poll failure) can't fight each
+    // other over the buttons' state.
+    //
+    // Preview deliberately does NOT require a display name: it synthesises
+    // from script + voice only (see formPayload(false)), and the name is a
+    // library concern. Requiring it would block the tuning loop for no
+    // reason.
+    function updateActionState() {
+        const script = scriptInput.value.trim();
+        const hasScript = script.length > 0 && script.length <= CHAR_LIMIT;
+        const hasVoice = !!voiceSelect.value && !voiceSelect.disabled;
+        const ready = speechReady && hasVoice && !busy;
+
+        previewBtn.disabled = !(ready && hasScript);
+        saveBtn.disabled = !(ready && hasScript && displayNameInput.value.trim().length > 0);
+        dirtyIndicator.hidden = !dirty;
+    }
+
+    function markDirty() {
+        if (dirty) return;
+        dirty = true;
+        updateActionState();
+    }
+
+    function clearDirty() {
+        dirty = false;
+        updateActionState();
+    }
 
     function setStatus(message, isError) {
         statusEl.textContent = message || "";
@@ -169,6 +251,7 @@
         const len = scriptInput.value.length;
         counterEl.textContent = len + " / " + CHAR_LIMIT;
         counterEl.className = len > CHAR_LIMIT ? "text-danger" : "text-muted";
+        updateActionState();
     }
 
     function formPayload(includeDisplayName) {
@@ -185,12 +268,15 @@
         return payload;
     }
 
-    function setBusy(button, busyText, busy) {
+    function setBusy(button, busyText, isBusy) {
         if (!button.dataset.originalText) {
             button.dataset.originalText = button.textContent;
         }
-        button.disabled = busy;
-        button.textContent = busy ? busyText : button.dataset.originalText;
+        busy = isBusy;
+        button.textContent = isBusy ? busyText : button.dataset.originalText;
+        // Disables *both* actions while in flight, and restores each one
+        // according to current validity when it settles.
+        updateActionState();
     }
 
     function revokePreviewUrl() {
@@ -275,13 +361,13 @@
             } else {
                 setStatus("", false);
             }
-            previewBtn.disabled = !data.available || !voices.length;
-            saveBtn.disabled = !data.available || !voices.length;
+            speechReady = !!data.available && voices.length > 0;
+            updateActionState();
         } catch (err) {
             setVoiceOptions([]);
             setStatus(extractErrorMsg(err, "Failed to load voices."), true);
-            previewBtn.disabled = true;
-            saveBtn.disabled = true;
+            speechReady = false;
+            updateActionState();
         }
     }
 
@@ -310,19 +396,20 @@
                 statusPollTimer = null;
                 if (status === "done") {
                     progressEl.textContent = "Ready — opening asset library…";
-                    window.location.href = "/assets";
+                    // Drop the guard before navigating, or our own success
+                    // redirect would trip the unsaved-changes prompt.
+                    clearDirty();
+                    window.location.href = pendingRedirect;
                     return;
                 }
                 progressEl.textContent = "";
                 setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
-                previewBtn.disabled = voiceSelect.disabled;
                 setStatus(data.generation_error || "Voice synthesis failed.", true);
             } catch (err) {
                 clearInterval(statusPollTimer);
                 statusPollTimer = null;
                 progressEl.textContent = "";
                 setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
-                previewBtn.disabled = voiceSelect.disabled;
                 setStatus(extractErrorMsg(err, "Failed to refresh generation status."), true);
             }
         }
@@ -337,7 +424,6 @@
         setStatus("", false);
         progressEl.textContent = "";
         setBusy(previewBtn, "Previewing…", true);
-        saveBtn.disabled = true;
         revokePreviewUrl();
         try {
             const resp = await fetch("/api/voice-announcements/preview", {
@@ -352,20 +438,20 @@
             const blob = await resp.blob();
             previewUrl = URL.createObjectURL(blob);
             previewAudio.src = previewUrl;
-            previewWrap.hidden = false;
+            previewAudio.hidden = false;
             previewMeta.textContent = voiceSelect.options[voiceSelect.selectedIndex]
                 ? voiceSelect.options[voiceSelect.selectedIndex].textContent
                 : "";
             await previewAudio.play();
             setStatus("Preview ready.", false);
         } catch (err) {
-            previewWrap.hidden = true;
+            previewAudio.hidden = true;
             previewAudio.removeAttribute("src");
             previewAudio.load();
+            previewMeta.textContent = "";
             setStatus(extractErrorMsg(err, "Preview failed."), true);
         } finally {
             setBusy(previewBtn, "Previewing…", false);
-            saveBtn.disabled = voiceSelect.disabled;
         }
     });
 
@@ -373,12 +459,24 @@
     languageInput.addEventListener("change", loadVoices);
     scriptInput.addEventListener("input", updateCounter);
 
+    // Dirty tracking. Only user-driven events are wired up: assigning
+    // .value programmatically (the voice list load, INITIAL_RATE) does not
+    // fire input/change, so restoring server state can't mark the form
+    // dirty on its own.
+    displayNameInput.addEventListener("input", markDirty);
+    displayNameInput.addEventListener("input", updateActionState);
+    scriptInput.addEventListener("input", markDirty);
+    languageInput.addEventListener("input", markDirty);
+    voiceSelect.addEventListener("change", markDirty);
+    emotionSelect.addEventListener("change", markDirty);
+    rateSelect.addEventListener("change", markDirty);
+    voiceSelect.addEventListener("change", updateActionState);
+
     form.addEventListener("submit", async function (event) {
         event.preventDefault();
         setStatus("", false);
         progressEl.textContent = "";
         setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", true);
-        previewBtn.disabled = true;
 
         try {
             const url = EDIT_MODE
@@ -399,21 +497,111 @@
             }
             await pollGenerationStatus(data.asset_id || ASSET_ID);
         } catch (err) {
+            // The save didn't land, so the form is genuinely still dirty:
+            // leave the guard armed and reset the redirect target so a
+            // later plain save goes to the library.
+            pendingRedirect = "/assets";
             setStatus(extractErrorMsg(err, EDIT_MODE ? "Save failed." : "Create failed."), true);
         } finally {
             if (!statusPollTimer) {
                 setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
-                previewBtn.disabled = voiceSelect.disabled;
             }
         }
     });
+
+    // ── unsaved-changes guard ──
+    //
+    // Mirrors the pattern already used by the slideshow and composed
+    // builders: a three-way modal for in-app navigation (which can offer
+    // to save), plus the native beforeunload prompt for tab close /
+    // refresh / browser-back (which can't).
+    //
+    // Uses the shared createModal() helper from app.js so this matches
+    // showConfirm/showPrompt rather than rolling its own dialog.
+    function showUnsavedChangesModal(targetHref) {
+        const { box, close } = createModal({
+            closeOnBackdrop: true,
+            closeOnEsc: true,
+        });
+        const msg = document.createElement("p");
+        msg.textContent = "You have unsaved changes to this announcement. "
+            + "Save them before leaving?";
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.textContent = "Cancel";
+        const discardBtn = document.createElement("button");
+        discardBtn.className = "btn btn-danger";
+        discardBtn.textContent = "Discard";
+        const saveNowBtn = document.createElement("button");
+        saveNowBtn.className = "btn btn-primary";
+        saveNowBtn.textContent = "Save";
+        // Can't offer to save what the form won't accept.
+        saveNowBtn.disabled = saveBtn.disabled;
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(discardBtn);
+        actions.appendChild(saveNowBtn);
+        box.appendChild(msg);
+        box.appendChild(actions);
+
+        cancelBtn.onclick = () => close();
+        discardBtn.onclick = () => {
+            clearDirty();
+            close();
+            window.location.href = targetHref;
+        };
+        saveNowBtn.onclick = () => {
+            // Synthesis is asynchronous; pollGenerationStatus navigates to
+            // pendingRedirect once it reports done. On failure the user
+            // stays here with an inline error and the guard still armed.
+            pendingRedirect = targetHref;
+            close();
+            form.requestSubmit();
+        };
+    }
+
+    document.addEventListener("click", function (e) {
+        if (!dirty) return;
+        const a = e.target.closest && e.target.closest("a[href]");
+        if (!a) return;
+        const href = a.getAttribute("href");
+        // Skip fragment-only links, javascript: hrefs, downloads, new-tab
+        // and middle-clicks, and anything not a same-origin navigation.
+        if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+        if (a.target === "_blank" || a.hasAttribute("download")) return;
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+        let absolute;
+        try { absolute = new URL(href, window.location.href); }
+        catch { return; }
+        if (absolute.origin !== window.location.origin) return;
+        // Don't intercept clicks back to the page we're already on.
+        if (absolute.pathname === window.location.pathname &&
+            absolute.search === window.location.search) return;
+        e.preventDefault();
+        showUnsavedChangesModal(absolute.pathname + absolute.search + absolute.hash);
+    }, true);
 
     if (INITIAL_RATE) {
         rateSelect.value = INITIAL_RATE;
     }
     updateCounter();
+    updateActionState();
     loadVoices();
-    window.addEventListener("beforeunload", function () {
+    window.addEventListener("beforeunload", function (e) {
+        if (!dirty) return;
+        e.preventDefault();
+        // Required by some browsers; modern ones ignore the string.
+        e.returnValue = "";
+    });
+
+    // Cleanup belongs on pagehide, not beforeunload: beforeunload also
+    // fires when the user is *offered* the prompt and then cancels it, and
+    // tearing down the blob URL or the status poll at that point would
+    // break the page the user just chose to stay on.
+    window.addEventListener("pagehide", function () {
         revokePreviewUrl();
         if (statusPollTimer) {
             clearInterval(statusPollTimer);
