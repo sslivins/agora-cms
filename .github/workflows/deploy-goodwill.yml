@@ -53,6 +53,9 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # See deploy-goodwill-dev.yml: the job includes a 15-minute revision
+    # wait loop, so 30 is the smallest cap that can't fire on a good run.
+    timeout-minutes: 30
     environment: seattle-goodwill
     outputs:
       resolved_version: ${{ steps.resolve.outputs.resolved_version }}
@@ -201,6 +204,7 @@ jobs:
   verify:
     needs: [deploy]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: seattle-goodwill
     steps:
       - uses: actions/checkout@v4
