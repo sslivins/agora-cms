@@ -82,7 +82,7 @@ async def test_synthesize_builds_expected_ssml_and_headers():
 
     assert data == b"fake-ogg-audio"
     assert seen["url"] == (
-        "https://westus.tts.speech.microsoft.com/cognitiveservices/v1"
+        "https://example.cognitiveservices.azure.com/cognitiveservices/v1"
     )
     headers = httpx.Headers(seen["headers"])
     assert headers["Authorization"] == "Bearer fake-token"
@@ -103,7 +103,7 @@ async def test_list_voices_filters_and_caches():
     def _handler(request: httpx.Request) -> httpx.Response:
         seen["calls"] += 1
         assert str(request.url) == (
-            "https://westus.tts.speech.microsoft.com/cognitiveservices/voices/list"
+            "https://example.cognitiveservices.azure.com/cognitiveservices/voices/list"
         )
         return httpx.Response(
             200,
