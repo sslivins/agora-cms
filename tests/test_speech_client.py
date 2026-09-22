@@ -103,7 +103,7 @@ async def test_list_voices_filters_and_caches():
     def _handler(request: httpx.Request) -> httpx.Response:
         seen["calls"] += 1
         assert str(request.url) == (
-            "https://example.cognitiveservices.azure.com/cognitiveservices/voices/list"
+            "https://example.cognitiveservices.azure.com/tts/cognitiveservices/voices/list"
         )
         return httpx.Response(
             200,

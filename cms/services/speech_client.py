@@ -174,7 +174,7 @@ class SpeechClient:
         # tokens, even when the token/RBAC grant is otherwise valid.
         custom_domain = settings.azure_speech_endpoint.rstrip("/")
         self._synthesis_url = f"{custom_domain}/cognitiveservices/v1"
-        self._voices_url = f"{custom_domain}/cognitiveservices/voices/list"
+        self._voices_url = f"{custom_domain}/tts/cognitiveservices/voices/list"
 
     async def aclose(self) -> None:
         await self._client.aclose()
