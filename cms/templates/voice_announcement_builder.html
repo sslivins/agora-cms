@@ -482,20 +482,17 @@
                 }
                 const status = data.generation_status;
                 if (status === "pending") {
-                    progressEl.textContent = "Queued for synthesis…";
+                    progressEl.textContent = "Saved — queued for synthesis. You can leave this page.";
                     return;
                 }
                 if (status === "processing") {
-                    progressEl.textContent = "Synthesizing audio…";
+                    progressEl.textContent = "Saved — synthesizing audio. You can leave this page.";
                     return;
                 }
                 clearInterval(statusPollTimer);
                 statusPollTimer = null;
                 if (status === "done") {
                     progressEl.textContent = "Ready — opening asset library…";
-                    // Drop the guard before navigating, or our own success
-                    // redirect would trip the unsaved-changes prompt.
-                    clearDirty();
                     window.location.href = pendingRedirect;
                     return;
                 }
@@ -593,6 +590,13 @@
             if (!EDIT_MODE && data.asset_id && titleEl) {
                 titleEl.textContent = displayNameInput.value.trim();
             }
+            // The asset is persisted the moment this request succeeds --
+            // synthesis is a separate worker job that runs whether or not
+            // this page stays open. Release the guard here rather than
+            // when polling reports "done", otherwise leaving during the
+            // "Queued for synthesis" window falsely warns about losing
+            // work that is already saved.
+            clearDirty();
             await pollGenerationStatus(data.asset_id || ASSET_ID);
         } catch (err) {
             // The save didn't land, so the form is genuinely still dirty:
