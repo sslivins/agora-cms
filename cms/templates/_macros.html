@@ -262,7 +262,7 @@
                     <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>
                     {% endif %}
                 </td>
-                <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% elif a.asset_type.value == 'voice_announcement' %}Voice Announcement{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
+                <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% elif a.asset_type.value == 'voice_announcement' %}Voice{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
                 <td>
                     {% if a.is_global %}
                     <span class="badge badge-ready">Global</span>
