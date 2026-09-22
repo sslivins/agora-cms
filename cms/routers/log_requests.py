@@ -206,6 +206,24 @@ async def create_log_request(
         services=body.services,
         since=body.since,
     )
+    # Capture the id before the commit below: the session expires
+    # attributes on commit, and a lazy refresh from async context
+    # raises MissingGreenlet.
+    request_id = row.id
+
+    # Commit *before* telling the device to do anything (#904).
+    #
+    # ``create`` only flushes, so until this commit the row is visible
+    # to nobody but this transaction.  A device that answers REQUEST_LOGS
+    # quickly — the norm for the e2e simulator, and perfectly possible
+    # for a real Pi — lands in ``device_inbound``'s LOGS_RESPONSE branch
+    # on a *different* session (and in multi-replica prod, a different
+    # process), where ``log_outbox.get`` returns ``None``.  The handler's
+    # ``if row is not None`` guard then drops the payload silently and
+    # the request sits in ``sent`` with no ``last_error`` until the
+    # ~15-minute stuck-sent rescue.  Persist first, then side-effect:
+    # the standard outbox ordering.
+    await db.commit()
 
     transport = get_transport()
     dispatched = False
@@ -213,7 +231,7 @@ async def create_log_request(
     try:
         await transport.dispatch_request_logs(
             body.device_id,
-            request_id=row.id,
+            request_id=request_id,
             services=body.services,
             since=body.since,
         )
@@ -224,18 +242,21 @@ async def create_log_request(
         logger.exception("dispatch_request_logs(%s) failed", body.device_id)
         dispatch_err = str(exc)
 
+    # Both helpers below are guarded on ``status == pending``, so if the
+    # device already answered and the row is ``ready`` they no-op rather
+    # than dragging it backwards.
     if dispatched:
-        await log_outbox.mark_sent(db, row.id)
+        await log_outbox.mark_sent(db, request_id)
     else:
         await log_outbox.record_attempt_error(
-            db, row.id, error=dispatch_err or "dispatch failed",
+            db, request_id, error=dispatch_err or "dispatch failed",
         )
 
     await audit_log(
         db, user=user,
         action="logs.request",
         resource_type="log_request",
-        resource_id=row.id,
+        resource_id=request_id,
         description=(
             f"Requested logs from device {body.device_id} "
             f"({'dispatched' if dispatched else 'queued'})"
@@ -252,7 +273,7 @@ async def create_log_request(
     await db.commit()
 
     return {
-        "request_id": row.id,
+        "request_id": request_id,
         "status": "sent" if dispatched else "pending",
     }
 
