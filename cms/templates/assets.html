@@ -605,12 +605,14 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         }
     }
 
+    // Returns true only if the swap actually happened, so callers can retry
+    // a transient /row failure instead of treating the asset as done.
     async function _replaceAssetDetailRow(id) {
         const frag = await _fetchAssetRowFragment(id);
-        if (!frag) return;
+        if (!frag) return false;
         const oldRow = document.querySelector(`tr.asset-row[data-asset-id="${id}"]`);
         const oldDetail = document.querySelector(`tr.asset-detail[data-detail-for="${id}"]`);
-        if (!oldRow) return;
+        if (!oldRow) return false;
         const wasExpanded = oldRow.classList.contains('expanded');
         const newRow = frag.querySelector(`tr.asset-row[data-asset-id="${id}"]`);
         const newDetail = frag.querySelector(`tr.asset-detail[data-detail-for="${id}"]`);
@@ -623,6 +625,17 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
             const toggle = newRow.querySelector('.expand-toggle');
             if (toggle) toggle.textContent = '▼';
         }
+        // The grid is rendered from the row attributes, so a card built
+        // before this swap still shows the old size. Rebuild just this card
+        // from the refreshed row; otherwise grid view keeps the stale value
+        // until the user toggles views or reloads.
+        const card = document.querySelector(`[data-grid-card="${id}"]`);
+        if (card && newRow &&
+                typeof window._renderGridCard === 'function' &&
+                typeof window._assetObjFromRow === 'function') {
+            card.replaceWith(window._renderGridCard(window._assetObjFromRow(newRow)));
+        }
+        return true;
     }
 
     window._insertAssetRow = _insertAssetRow;
@@ -870,6 +883,13 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         return '<span class="badge badge-pending">Queued</span>';
     }
 
+    // Voice rows we've already re-rendered after synthesis finished, and the
+    // ones currently being fetched. The dataset check below is the real
+    // guard; these stop overlapping polls double-fetching, and stop a
+    // genuinely 0-byte asset refetching on every tick.
+    const _voiceRowsRefreshed = new Set();
+    const _voiceRefreshInFlight = new Set();
+
     function updateLiveAssets(assets) {
         for (const a of assets) {
             // Update main table variant badge
@@ -935,6 +955,28 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
                 const detailRow = document.querySelector('tr.asset-detail[data-detail-for="' + a.id + '"]');
                 if (detailRow && !detailRow.querySelector('[data-live-variant-table="' + a.id + '"]')) {
                     _replaceAssetDetailRow(a.id);
+                }
+            }
+            // A voice announcement is inserted with size 0 and no duration --
+            // the worker fills both in when synthesis finishes. The badge above
+            // flips to "Ready" on its own, but Size and Duration are plain
+            // server-rendered cells, so they sat at 0/-- until a manual
+            // refresh. Re-render the row pair from the server once, rather
+            // than duplicating the Jinja size/duration formatting here.
+            if (a.asset_type === 'voice_announcement' &&
+                    a.voice_generation_status === 'done' &&
+                    !_voiceRowsRefreshed.has(a.id) &&
+                    !_voiceRefreshInFlight.has(a.id)) {
+                const row = document.querySelector('tr.asset-row[data-asset-id="' + a.id + '"]');
+                if (row && (row.dataset.sizeBytes || '0') === '0') {
+                    // Only record success once the swap lands. Marking up
+                    // front would strand the row on any transient /row
+                    // failure, since _fetchAssetRowFragment swallows errors.
+                    _voiceRefreshInFlight.add(a.id);
+                    _replaceAssetDetailRow(a.id).then(ok => {
+                        _voiceRefreshInFlight.delete(a.id);
+                        if (ok) _voiceRowsRefreshed.add(a.id);
+                    });
                 }
             }
         }
@@ -1394,6 +1436,10 @@ function fallbackCopy(text, onSuccess) {
             schedule_count: parseInt(row.dataset.scheduleCount || '0', 10),
             slide_count: parseInt(row.dataset.slideCount || '0', 10),
             expired_slide_count: parseInt(row.dataset.expiredSlideCount || '0', 10),
+            // _renderGridCard draws the composed "UNPUBLISHED" warning from
+            // this. Without it, any card rebuilt from a row -- the table/grid
+            // toggle, or a poller row swap -- silently dropped the badge.
+            unpublished: row.dataset.unpublished === '1',
             tags: parsedTags,
         };
     }
