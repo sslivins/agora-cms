@@ -654,6 +654,20 @@ async def dispatch_device_message(
                 from cms.services.log_blob import write_log_blob
 
                 row = await log_outbox.get(db, request_id)
+                if row is None:
+                    # Previously a silent no-op — the single biggest
+                    # reason the #904 race was invisible for so long.
+                    logger.warning(
+                        "LOGS_RESPONSE for unknown request %s (device %s); "
+                        "payload dropped",
+                        request_id, device_id,
+                    )
+                elif row.status not in (STATUS_PENDING, STATUS_SENT):
+                    logger.info(
+                        "LOGS_RESPONSE for request %s (device %s) ignored: "
+                        "status is already %s",
+                        request_id, device_id, row.status,
+                    )
                 if row is not None and row.status in (STATUS_PENDING, STATUS_SENT):
                     if error:
                         await log_outbox.mark_failed(db, request_id, error=error)

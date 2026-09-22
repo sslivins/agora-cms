@@ -585,3 +585,112 @@ class TestUploadLogBundle:
             row = await log_outbox.get(db, rid)
             assert row.status == STATUS_READY
             assert row.blob_path == f"{DEVICE_ID}/{rid}.tar.gz"
+
+
+# ── Dispatch/commit ordering (#904) ─────────────────────────────────
+
+
+async def _noop_send(_msg: dict) -> None:
+    """``dispatch_device_message`` reply channel — unused by LOGS_RESPONSE."""
+
+
+class TestDispatchCommitOrdering:
+    """The outbox row must be durable *before* the device is told to act.
+
+    ``create_log_request`` flushes the row, dispatches REQUEST_LOGS,
+    then commits.  A device that replies inside that window hits
+    ``device_inbound``'s LOGS_RESPONSE branch on a *different* DB
+    session, where the uncommitted row is invisible — ``log_outbox.get``
+    returns ``None``, the handler's ``if row is not None`` guard drops
+    the payload silently, and the request sits in ``sent`` with no
+    ``last_error`` until the ~15-minute stuck-sent rescue.
+
+    Observed as a nightly flake in
+    ``test_12b_logs_success_paths.py::test_request_logs_small_payload_takes_ws_json_branch``:
+    the simulator recorded both ``request_logs: 1`` and
+    ``logs_ws_json: 1`` (so the device provably received *and*
+    answered), yet the row never reached ``ready``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_row_is_visible_to_other_sessions_before_dispatch(
+        self, client, seeded, fake_transport,
+    ):
+        factory = get_session_factory()
+        seen: dict[str, object] = {}
+        inner = fake_transport.dispatch_request_logs
+
+        async def dispatch_then_peek(device_id, *, request_id, services=None, since="24h"):
+            await inner(device_id, request_id=request_id, services=services, since=since)
+            # Stand in for the LOGS_RESPONSE handler: its own session,
+            # and in multi-replica prod quite possibly another process.
+            async with factory() as other:
+                seen["row"] = await log_outbox.get(other, request_id)
+
+        fake_transport.dispatch_request_logs = dispatch_then_peek
+        fake_transport.connected.add(DEVICE_ID)
+
+        resp = await client.post(
+            "/api/logs/requests", json={"device_id": DEVICE_ID, "since": "1h"},
+        )
+        assert resp.status_code == 202, resp.text
+
+        assert seen["row"] is not None, (
+            "REQUEST_LOGS was dispatched before the outbox row was "
+            "committed: a fast device reply would be silently dropped "
+            "by device_inbound's LOGS_RESPONSE branch."
+        )
+
+    @pytest.mark.asyncio
+    async def test_fast_reply_during_dispatch_still_reaches_ready(
+        self, client, seeded, fake_transport, tmp_path,
+    ):
+        """End-to-end version: the device answers *during* dispatch."""
+        from cms.auth import get_settings
+        from cms.schemas.protocol import MessageType
+        from cms.services.device_inbound import (
+            InboundContext,
+            dispatch_device_message,
+        )
+
+        factory = get_session_factory()
+        inner = fake_transport.dispatch_request_logs
+
+        async def dispatch_and_reply(device_id, *, request_id, services=None, since="24h"):
+            await inner(device_id, request_id=request_id, services=services, since=since)
+            async with factory() as other:
+                device = await other.get(Device, device_id)
+                ctx = InboundContext(
+                    device_id=device_id,
+                    device=device,
+                    base_url="http://test",
+                    settings=get_settings(),
+                )
+                await dispatch_device_message(
+                    msg={
+                        "type": MessageType.LOGS_RESPONSE.value,
+                        "request_id": request_id,
+                        "logs": {"agora-player": "hello from the device"},
+                    },
+                    ctx=ctx,
+                    db=other,
+                    send=_noop_send,
+                )
+
+        fake_transport.dispatch_request_logs = dispatch_and_reply
+        fake_transport.connected.add(DEVICE_ID)
+
+        resp = await client.post(
+            "/api/logs/requests", json={"device_id": DEVICE_ID, "since": "1h"},
+        )
+        assert resp.status_code == 202, resp.text
+        rid = resp.json()["request_id"]
+
+        async with factory() as db:
+            row = await log_outbox.get(db, rid)
+            assert row is not None
+            assert row.status == STATUS_READY, (
+                f"status={row.status!r} last_error={row.last_error!r} — "
+                "the device's reply was dropped instead of stored."
+            )
+            assert row.size_bytes and row.size_bytes > 0
