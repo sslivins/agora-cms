@@ -65,6 +65,41 @@ class _VoiceListSpeechClient:
         ]
 
 
+class _MultiLocaleSpeechClient:
+    """Records the scoping argument the router actually passes through.
+
+    The builder derives its Language dropdown from the locales present in
+    an unscoped catalogue, so the endpoint defaulting to ``None`` rather
+    than ``en-US`` is load-bearing: a default of en-US would collapse the
+    dropdown to a single entry and hide every other language.
+    """
+
+    seen_language: object = "<unset>"
+
+    def __init__(self, _settings):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+    async def list_voices(self, language=None):
+        type(self).seen_language = language
+        catalogue = [
+            {"short_name": "en-US-Ava:MAI-Voice-2", "display_name": "Ava",
+             "locale": "en-US", "emotions": []},
+            {"short_name": "fr-FR-Marc:MAI-Voice-2", "display_name": "Marc",
+             "locale": "fr-FR", "emotions": []},
+            {"short_name": "hu-HU-Lilla:MAI-Voice-2", "display_name": "Lilla",
+             "locale": "hu-HU", "emotions": []},
+        ]
+        if not language:
+            return catalogue
+        return [v for v in catalogue if v["locale"].startswith(language)]
+
+
 async def _seed_voice_asset(db_session, *, owner_id=None):
     asset_id = uuid.uuid4()
     asset = Asset(
@@ -281,3 +316,32 @@ class TestVoiceAnnouncementsApi:
             "available": True,
             "message": None,
         }
+
+    async def test_voice_catalog_defaults_to_every_locale(self, client):
+        """No ``language`` must mean no scoping, not an implicit en-US.
+
+        The builder fetches once and builds its Language dropdown from the
+        locales it gets back, so an implicit en-US default would silently
+        hide every other language Microsoft offers.
+        """
+        _MultiLocaleSpeechClient.seen_language = "<unset>"
+        with patch("cms.routers.voice_announcements.is_available", return_value=True), patch(
+            "cms.routers.voice_announcements.SpeechClient", _MultiLocaleSpeechClient
+        ):
+            resp = await client.get("/api/voice-announcements/voices")
+
+        assert resp.status_code == 200, resp.text
+        assert _MultiLocaleSpeechClient.seen_language is None
+        locales = sorted({v["locale"] for v in resp.json()["voices"]})
+        assert locales == ["en-US", "fr-FR", "hu-HU"]
+
+    async def test_voice_catalog_still_scopes_when_language_given(self, client):
+        """An explicit ``language`` must keep filtering by locale prefix."""
+        with patch("cms.routers.voice_announcements.is_available", return_value=True), patch(
+            "cms.routers.voice_announcements.SpeechClient", _MultiLocaleSpeechClient
+        ):
+            resp = await client.get("/api/voice-announcements/voices?language=fr-FR")
+
+        assert resp.status_code == 200, resp.text
+        assert _MultiLocaleSpeechClient.seen_language == "fr-FR"
+        assert [v["locale"] for v in resp.json()["voices"]] == ["fr-FR"]
