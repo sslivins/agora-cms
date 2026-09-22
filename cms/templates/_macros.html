@@ -262,7 +262,7 @@
                     <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>
                     {% endif %}
                 </td>
-                <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
+                <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% elif a.asset_type.value == 'voice_announcement' %}Voice Announcement{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
                 <td>
                     {% if a.is_global %}
                     <span class="badge badge-ready">Global</span>
@@ -306,6 +306,16 @@
                         {% endif %}
                         {% if a.expired_slide_count is defined and a.expired_slide_count > 0 %}
                         <span class="has-tooltip"><span class="badge badge-warning" style="margin-left:0.4rem;">{{ a.expired_slide_count }} expired slide{{ 's' if a.expired_slide_count != 1 else '' }}</span><span class="tooltip">{{ a.expired_slide_count }} slide{{ 's' if a.expired_slide_count != 1 else '' }} {{ 'have' if a.expired_slide_count != 1 else 'has' }} a visibility end date in the past and will never show again. Edit or remove {{ 'them' if a.expired_slide_count != 1 else 'it' }} in the slideshow editor.</span></span>
+                        {% endif %}
+                    {% elif a.asset_type.value == 'voice_announcement' and a.voice_announcement %}
+                        {% if a.voice_announcement.generation_status.value == 'done' %}
+                        <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">Synthesized audio is ready to preview and schedule.</span></span>
+                        {% elif a.voice_announcement.generation_status.value == 'processing' %}
+                        <span class="has-tooltip"><span class="badge badge-progress" style="--pct: 50%">Synthesizing</span><span class="tooltip">Worker is generating the Ogg/Opus audio asset.</span></span>
+                        {% elif a.voice_announcement.generation_status.value == 'failed' %}
+                        <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ (a.voice_announcement.generation_error or 'Unknown synthesis error')[:200] }}</span></span>
+                        {% else %}
+                        <span class="has-tooltip"><span class="badge badge-pending">Queued</span><span class="tooltip">Waiting for the worker to generate audio.</span></span>
                         {% endif %}
                     {% elif a.variant_total > 0 %}
                     {% if a.variant_failed > 0 and a.variant_ready > 0 %}
@@ -377,6 +387,11 @@
                         <a role="menuitem" href="/assets/{{ a.id }}/composed">Edit composed</a>
                         {% else %}
                         <a role="menuitem" href="/assets/{{ a.id }}/composed">View composed</a>
+                        {% endif %}
+                    {% elif a.asset_type.value == 'voice_announcement' %}
+                        <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', {{ (a.display_name or a.original_filename or a.filename) | tojson | forceescape }}, '{{ a.asset_type.value }}')">Preview</button>
+                        {% if 'assets:write' in user_perms and is_owner %}
+                        <a role="menuitem" href="/assets/{{ a.id }}/voice">Edit voice</a>
                         {% endif %}
                     {% else %}
                         <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', {{ a.filename | tojson | forceescape }}, '{{ a.asset_type.value }}')">Preview</button>
@@ -500,6 +515,40 @@
                                 </span>
                             </span>
                         </div>
+                        {% if a.asset_type.value == 'voice_announcement' and a.voice_announcement %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">Playback</span>
+                            <span class="detail-value">
+                                {% if a.voice_announcement.generation_status.value == 'done' %}
+                                <audio controls preload="none" style="width:min(420px, 100%);">
+                                    <source src="/api/assets/{{ a.id }}/preview" type="audio/ogg; codecs=opus">
+                                </audio>
+                                {% else %}
+                                <span class="text-muted">Audio preview will appear after synthesis completes.</span>
+                                {% endif %}
+                            </span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Voice</span>
+                            <span class="detail-value">{{ a.voice_announcement.voice_name }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Language</span>
+                            <span class="detail-value">{{ a.voice_announcement.language }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Emotion</span>
+                            <span class="detail-value">{{ a.voice_announcement.emotion or 'Default' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Speech Rate</span>
+                            <span class="detail-value">{{ a.voice_announcement.speech_rate or 'Normal' }}</span>
+                        </div>
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">Script</span>
+                            <span class="detail-value" style="white-space:pre-wrap; word-break:break-word;">{{ a.voice_announcement.script_text }}</span>
+                        </div>
+                        {% endif %}
                         {% if 'assets:write' in user_perms %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">Scope</span>

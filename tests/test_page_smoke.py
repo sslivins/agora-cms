@@ -21,6 +21,8 @@ UI_PAGES = [
     "/",
     "/devices",
     "/assets",
+    "/assets/new",
+    "/assets/new/voice",
     "/schedules",
     "/profiles",
     "/settings",
@@ -67,3 +69,18 @@ class TestPageSmoke:
         assert resp.status_code == 200, (
             f"GET {path} returned {resp.status_code}"
         )
+
+    async def test_voice_builder_requires_assets_write(self, app, db_session):
+        from tests.test_ui_overhaul import _create_user, _login_as
+
+        await _create_user(db_session, username="voice-smoke-viewer", role_name="Viewer")
+        ac = await _login_as(app, "voice-smoke-viewer")
+        try:
+            resp = await ac.get("/assets/new/voice")
+            assert resp.status_code == 403, resp.text
+
+            library = await ac.get("/assets")
+            assert library.status_code == 200, library.text
+            assert 'href="/assets/new/voice"' not in library.text
+        finally:
+            await ac.aclose()

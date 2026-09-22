@@ -1,5 +1,7 @@
 """Web UI routes — Jinja2 server-rendered pages."""
 
+import uuid
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -46,6 +48,7 @@ from cms.database import get_db
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.voice_announcement import VoiceAnnouncement
 from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE, FEATURES_READ, FEATURES_WRITE, has_permission
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
@@ -1732,7 +1735,10 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     asset_q = (
         select(Asset)
         .where(Asset.deleted_at.is_(None))
-        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+        .options(
+            selectinload(Asset.variants).selectinload(AssetVariant.profile),
+            selectinload(Asset.voice_announcement),
+        )
         .order_by(Asset.uploaded_at.desc())
     )
     if group_ids is not None:
@@ -1989,6 +1995,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
     from cms.services.assistant_flag import assistant_enabled_for
     assistant_on = bool(user) and await assistant_enabled_for(db, user)
 
+    settings = get_settings()
     ctx = {
         "active_tab": "assets",
         "is_admin": is_admin,
@@ -2123,7 +2130,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
 async def assets_new_hub(request: Request, db: AsyncSession = Depends(get_db)):
     """Hub page listing builders that author synthetic assets.
 
-    Today: Slideshow. Future: Composed Slide / Scene.
+    Slideshow, composed-slide, and voice-announcement builders live here.
     """
     return templates.TemplateResponse(request, "assets_new.html", {
         "active_tab": "assets",
@@ -2337,6 +2344,70 @@ async def _composed_builder_context(request, db, *, asset_id=None):
     return ctx
 
 
+async def _voice_announcement_builder_context(request, db, *, asset_id=None):
+    """Common create/edit context for the voice-announcement builder."""
+    user: User | None = getattr(request.state, "user", None)
+    user_groups = await get_user_group_ids(user, db) if user else []
+    is_admin = user_groups is None
+    settings = get_settings()
+
+    ctx = {
+        "active_tab": "assets",
+        "edit_mode": False,
+        "asset_id": None,
+        "asset_name": "",
+        "script_text": "",
+        "voice_name": "",
+        "emotion": "",
+        "language": "en-US",
+        "speech_rate": "",
+        "char_limit": 2000,
+        "speech_available": bool(
+            settings.azure_speech_region and settings.azure_speech_endpoint
+        ),
+    }
+
+    if asset_id is None:
+        return ctx
+
+    try:
+        aid = uuid.UUID(str(asset_id))
+    except (ValueError, TypeError):
+        return None
+
+    asset_row = (
+        await db.execute(
+            select(Asset, VoiceAnnouncement)
+            .join(VoiceAnnouncement, VoiceAnnouncement.asset_id == Asset.id)
+            .where(
+                Asset.id == aid,
+                Asset.deleted_at.is_(None),
+                Asset.asset_type == AssetType.VOICE_ANNOUNCEMENT,
+            )
+        )
+    ).one_or_none()
+    if asset_row is None:
+        return None
+
+    asset, voice_announcement = asset_row
+    if not is_admin and (user is None or asset.uploaded_by_user_id != user.id):
+        return None
+
+    ctx.update(
+        {
+            "edit_mode": True,
+            "asset_id": str(asset.id),
+            "asset_name": asset.display_name or asset.original_filename or asset.filename,
+            "script_text": voice_announcement.script_text,
+            "voice_name": voice_announcement.voice_name,
+            "emotion": voice_announcement.emotion or "",
+            "language": voice_announcement.language,
+            "speech_rate": voice_announcement.speech_rate or "",
+        }
+    )
+    return ctx
+
+
 @router.get(
     "/assets/new/composed",
     response_class=HTMLResponse,
@@ -2370,6 +2441,32 @@ async def composed_builder_edit(
     if ctx is None:
         return RedirectResponse("/assets", status_code=303)
     return templates.TemplateResponse(request, "composed_editor.html", ctx)
+
+
+@router.get(
+    "/assets/new/voice",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
+)
+async def voice_announcement_builder_new(
+    request: Request, db: AsyncSession = Depends(get_db),
+):
+    ctx = await _voice_announcement_builder_context(request, db, asset_id=None)
+    return templates.TemplateResponse(request, "voice_announcement_builder.html", ctx)
+
+
+@router.get(
+    "/assets/{asset_id}/voice",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
+)
+async def voice_announcement_builder_edit(
+    asset_id: str, request: Request, db: AsyncSession = Depends(get_db),
+):
+    ctx = await _voice_announcement_builder_context(request, db, asset_id=asset_id)
+    if ctx is None:
+        return RedirectResponse("/assets", status_code=303)
+    return templates.TemplateResponse(request, "voice_announcement_builder.html", ctx)
 
 
 # ── Schedules ──

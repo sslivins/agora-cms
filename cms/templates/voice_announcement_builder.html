@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+{% block title %}{% if edit_mode %}Edit{% else %}New{% endif %} Voice Announcement — Agora CMS{% endblock %}
+{% block content %}
+<h1>{% if edit_mode %}Edit Voice Announcement{% else %}New Voice Announcement{% endif %}{% if asset_name %} — <span id="voice-builder-title">{{ asset_name }}</span>{% endif %}</h1>
+<div class="sub-tabs">
+    <a href="{% if edit_mode %}/assets{% else %}/assets/new{% endif %}" class="sub-tab">← Back to Assets</a>
+</div>
+
+<div class="card voice-builder-card">
+    <p class="text-muted" style="margin-top:0;">
+        Write a short script, preview it locally, then save it as a
+        schedulable audio asset.
+    </p>
+
+    <div id="voice-builder-status" class="form-status{% if not speech_available %} text-danger{% endif %}">
+        {% if not speech_available %}
+        Voice synthesis is unavailable in this environment.
+        {% endif %}
+    </div>
+
+    <form id="voice-builder-form" class="voice-builder-form">
+        <div class="form-group">
+            <label for="voice-display-name">Display Name</label>
+            <input
+                type="text"
+                id="voice-display-name"
+                class="form-control"
+                maxlength="255"
+                required
+                value="{{ asset_name }}"
+                placeholder="e.g. Lobby welcome announcement"
+            >
+        </div>
+
+        <div class="form-group">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+                <label for="voice-script-text">Script</label>
+                <span id="voice-script-counter" class="text-muted" style="font-size:0.85rem;">0 / {{ char_limit }}</span>
+            </div>
+            <textarea
+                id="voice-script-text"
+                class="form-control"
+                rows="7"
+                maxlength="{{ char_limit }}"
+                required
+                placeholder="Welcome to the lobby. The next event begins in 10 minutes."
+                style="resize:vertical;"
+            >{{ script_text }}</textarea>
+        </div>
+
+        <div class="voice-builder-grid">
+            <div class="form-group">
+                <label for="voice-language">Language</label>
+                <input
+                    type="text"
+                    id="voice-language"
+                    class="form-control"
+                    maxlength="16"
+                    value="{{ language }}"
+                    placeholder="en-US"
+                >
+                <small class="text-muted">Used to scope the live voice list.</small>
+            </div>
+
+            <div class="form-group">
+                <label for="voice-select">Voice</label>
+                <select id="voice-select" class="form-control" required>
+                    <option value="">Loading voices…</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="voice-emotion">Emotion</label>
+                <select id="voice-emotion" class="form-control">
+                    <option value="">Default</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="voice-rate">Speech Rate</label>
+                <select id="voice-rate" class="form-control">
+                    <option value="">Normal</option>
+                    <option value="-15%">Slow</option>
+                    <option value="+15%">Fast</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="voice-builder-actions">
+            <button type="button" class="btn btn-secondary" id="voice-preview-btn" {% if not speech_available %}disabled{% endif %}>Preview</button>
+            <button type="submit" class="btn btn-primary" id="voice-save-btn" {% if not speech_available %}disabled{% endif %}>
+                {% if edit_mode %}Save Changes{% else %}Create Announcement{% endif %}
+            </button>
+            <span id="voice-progress-text" class="text-muted" aria-live="polite"></span>
+        </div>
+    </form>
+
+    <div id="voice-preview-wrap" class="voice-preview-wrap" hidden>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap;">
+            <strong>Preview</strong>
+            <span id="voice-preview-meta" class="text-muted" style="font-size:0.85rem;"></span>
+        </div>
+        <audio id="voice-preview-audio" controls preload="none" style="width:100%; margin-top:0.5rem;"></audio>
+    </div>
+</div>
+
+<style>
+    .voice-builder-form {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+    .voice-builder-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+    }
+    .voice-builder-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+    .voice-preview-wrap {
+        margin-top: 1rem;
+        padding: 0.85rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-alt);
+    }
+</style>
+
+<script>
+(function () {
+    const CHAR_LIMIT = {{ char_limit }};
+    const EDIT_MODE = {{ edit_mode | tojson }};
+    const ASSET_ID = {{ asset_id | tojson }};
+    const INITIAL_VOICE_NAME = {{ voice_name | tojson }};
+    const INITIAL_EMOTION = {{ emotion | tojson }};
+    const INITIAL_RATE = {{ speech_rate | tojson }};
+
+    const form = document.getElementById("voice-builder-form");
+    const statusEl = document.getElementById("voice-builder-status");
+    const titleEl = document.getElementById("voice-builder-title");
+    const progressEl = document.getElementById("voice-progress-text");
+    const displayNameInput = document.getElementById("voice-display-name");
+    const scriptInput = document.getElementById("voice-script-text");
+    const counterEl = document.getElementById("voice-script-counter");
+    const languageInput = document.getElementById("voice-language");
+    const voiceSelect = document.getElementById("voice-select");
+    const emotionSelect = document.getElementById("voice-emotion");
+    const rateSelect = document.getElementById("voice-rate");
+    const previewBtn = document.getElementById("voice-preview-btn");
+    const saveBtn = document.getElementById("voice-save-btn");
+    const previewWrap = document.getElementById("voice-preview-wrap");
+    const previewAudio = document.getElementById("voice-preview-audio");
+    const previewMeta = document.getElementById("voice-preview-meta");
+
+    let previewUrl = null;
+    let voices = [];
+    let statusPollTimer = null;
+
+    function setStatus(message, isError) {
+        statusEl.textContent = message || "";
+        statusEl.className = "form-status" + (isError ? " text-danger" : "");
+    }
+
+    function updateCounter() {
+        const len = scriptInput.value.length;
+        counterEl.textContent = len + " / " + CHAR_LIMIT;
+        counterEl.className = len > CHAR_LIMIT ? "text-danger" : "text-muted";
+    }
+
+    function formPayload(includeDisplayName) {
+        const payload = {
+            script_text: scriptInput.value.trim(),
+            voice_name: voiceSelect.value,
+            emotion: emotionSelect.value || null,
+            language: (languageInput.value || "en-US").trim(),
+            speech_rate: rateSelect.value || null,
+        };
+        if (includeDisplayName) {
+            payload.display_name = displayNameInput.value.trim();
+        }
+        return payload;
+    }
+
+    function setBusy(button, busyText, busy) {
+        if (!button.dataset.originalText) {
+            button.dataset.originalText = button.textContent;
+        }
+        button.disabled = busy;
+        button.textContent = busy ? busyText : button.dataset.originalText;
+    }
+
+    function revokePreviewUrl() {
+        if (previewUrl) {
+            URL.revokeObjectURL(previewUrl);
+            previewUrl = null;
+        }
+    }
+
+    function updateEmotionOptions() {
+        const selected = voices.find(v => v.short_name === voiceSelect.value);
+        const emotions = selected ? (selected.emotions || []) : [];
+        const prior = emotionSelect.value;
+        emotionSelect.innerHTML = '<option value="">Default</option>';
+        for (const emotion of emotions) {
+            const option = document.createElement("option");
+            option.value = emotion;
+            option.textContent = emotion;
+            emotionSelect.appendChild(option);
+        }
+        if (emotions.includes(prior)) {
+            emotionSelect.value = prior;
+        } else if (emotions.includes(INITIAL_EMOTION) && !prior) {
+            emotionSelect.value = INITIAL_EMOTION;
+        } else {
+            emotionSelect.value = "";
+        }
+        emotionSelect.disabled = emotions.length === 0;
+    }
+
+    function setVoiceOptions(nextVoices) {
+        voices = Array.isArray(nextVoices) ? nextVoices : [];
+        const priorValue = voiceSelect.value || INITIAL_VOICE_NAME;
+        voiceSelect.innerHTML = "";
+
+        if (!voices.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No voices available";
+            voiceSelect.appendChild(option);
+            voiceSelect.disabled = true;
+            updateEmotionOptions();
+            return;
+        }
+
+        voiceSelect.disabled = false;
+        for (const voice of voices) {
+            const option = document.createElement("option");
+            option.value = voice.short_name;
+            option.textContent = voice.display_name + " (" + voice.locale + ")";
+            voiceSelect.appendChild(option);
+        }
+
+        const match = voices.find(v => v.short_name === priorValue);
+        if (match) {
+            voiceSelect.value = match.short_name;
+        } else if (INITIAL_VOICE_NAME) {
+            const legacy = document.createElement("option");
+            legacy.value = INITIAL_VOICE_NAME;
+            legacy.textContent = INITIAL_VOICE_NAME + " (current selection)";
+            voiceSelect.insertBefore(legacy, voiceSelect.firstChild);
+            voiceSelect.value = INITIAL_VOICE_NAME;
+        } else {
+            voiceSelect.selectedIndex = 0;
+        }
+        updateEmotionOptions();
+    }
+
+    async function loadVoices() {
+        const language = (languageInput.value || "en-US").trim();
+        voiceSelect.disabled = true;
+        voiceSelect.innerHTML = '<option value="">Loading voices…</option>';
+        try {
+            const resp = await fetch("/api/voice-announcements/voices?language=" + encodeURIComponent(language));
+            const data = await resp.json();
+            if (!resp.ok) {
+                throw data;
+            }
+            setVoiceOptions(data.voices || []);
+            if (data.message) {
+                setStatus(data.message, !data.available);
+            } else {
+                setStatus("", false);
+            }
+            previewBtn.disabled = !data.available || !voices.length;
+            saveBtn.disabled = !data.available || !voices.length;
+        } catch (err) {
+            setVoiceOptions([]);
+            setStatus(extractErrorMsg(err, "Failed to load voices."), true);
+            previewBtn.disabled = true;
+            saveBtn.disabled = true;
+        }
+    }
+
+    async function pollGenerationStatus(assetId) {
+        if (statusPollTimer) {
+            clearInterval(statusPollTimer);
+        }
+
+        async function pollOnce() {
+            try {
+                const resp = await fetch("/api/voice-announcements/" + encodeURIComponent(assetId));
+                const data = await resp.json();
+                if (!resp.ok) {
+                    throw data;
+                }
+                const status = data.generation_status;
+                if (status === "pending") {
+                    progressEl.textContent = "Queued for synthesis…";
+                    return;
+                }
+                if (status === "processing") {
+                    progressEl.textContent = "Synthesizing audio…";
+                    return;
+                }
+                clearInterval(statusPollTimer);
+                statusPollTimer = null;
+                if (status === "done") {
+                    progressEl.textContent = "Ready — opening asset library…";
+                    window.location.href = "/assets";
+                    return;
+                }
+                progressEl.textContent = "";
+                setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
+                previewBtn.disabled = voiceSelect.disabled;
+                setStatus(data.generation_error || "Voice synthesis failed.", true);
+            } catch (err) {
+                clearInterval(statusPollTimer);
+                statusPollTimer = null;
+                progressEl.textContent = "";
+                setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
+                previewBtn.disabled = voiceSelect.disabled;
+                setStatus(extractErrorMsg(err, "Failed to refresh generation status."), true);
+            }
+        }
+
+        await pollOnce();
+        if (!statusPollTimer) {
+            statusPollTimer = setInterval(pollOnce, 2000);
+        }
+    }
+
+    previewBtn.addEventListener("click", async function () {
+        setStatus("", false);
+        progressEl.textContent = "";
+        setBusy(previewBtn, "Previewing…", true);
+        saveBtn.disabled = true;
+        revokePreviewUrl();
+        try {
+            const resp = await fetch("/api/voice-announcements/preview", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(formPayload(false)),
+            });
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw err;
+            }
+            const blob = await resp.blob();
+            previewUrl = URL.createObjectURL(blob);
+            previewAudio.src = previewUrl;
+            previewWrap.hidden = false;
+            previewMeta.textContent = voiceSelect.options[voiceSelect.selectedIndex]
+                ? voiceSelect.options[voiceSelect.selectedIndex].textContent
+                : "";
+            await previewAudio.play();
+            setStatus("Preview ready.", false);
+        } catch (err) {
+            previewWrap.hidden = true;
+            previewAudio.removeAttribute("src");
+            previewAudio.load();
+            setStatus(extractErrorMsg(err, "Preview failed."), true);
+        } finally {
+            setBusy(previewBtn, "Previewing…", false);
+            saveBtn.disabled = voiceSelect.disabled;
+        }
+    });
+
+    voiceSelect.addEventListener("change", updateEmotionOptions);
+    languageInput.addEventListener("change", loadVoices);
+    scriptInput.addEventListener("input", updateCounter);
+
+    form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        setStatus("", false);
+        progressEl.textContent = "";
+        setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", true);
+        previewBtn.disabled = true;
+
+        try {
+            const url = EDIT_MODE
+                ? "/api/voice-announcements/" + encodeURIComponent(ASSET_ID)
+                : "/api/voice-announcements";
+            const method = EDIT_MODE ? "PUT" : "POST";
+            const resp = await fetch(url, {
+                method: method,
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(formPayload(true)),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                throw data;
+            }
+            if (!EDIT_MODE && data.asset_id && titleEl) {
+                titleEl.textContent = displayNameInput.value.trim();
+            }
+            await pollGenerationStatus(data.asset_id || ASSET_ID);
+        } catch (err) {
+            setStatus(extractErrorMsg(err, EDIT_MODE ? "Save failed." : "Create failed."), true);
+        } finally {
+            if (!statusPollTimer) {
+                setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
+                previewBtn.disabled = voiceSelect.disabled;
+            }
+        }
+    });
+
+    if (INITIAL_RATE) {
+        rateSelect.value = INITIAL_RATE;
+    }
+    updateCounter();
+    loadVoices();
+    window.addEventListener("beforeunload", function () {
+        revokePreviewUrl();
+        if (statusPollTimer) {
+            clearInterval(statusPollTimer);
+            statusPollTimer = null;
+        }
+    });
+})();
+</script>
+{% endblock %}

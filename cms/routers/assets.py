@@ -28,6 +28,7 @@ from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.tag import AssetTag, Tag
 from cms.models.user import User
 from cms.models.chat_thread import ChatThread
+from cms.models.voice_announcement import VoiceAnnouncement
 from cms.schemas.asset import (
     AssetBulkFailure,
     AssetBulkIn,
@@ -260,6 +261,7 @@ async def assets_status_json(
         .options(
             selectinload(Asset.variants).selectinload(AssetVariant.profile),
             selectinload(Asset.group_asset_links),
+            selectinload(Asset.voice_announcement),
         )
         .order_by(Asset.uploaded_at.desc())
     )
@@ -368,6 +370,14 @@ async def assets_status_json(
             "slide_count": slide_counts.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
             "expired_slide_count": expired_slide_counts_map.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
             "thumbnail_url": thumb_map.get(a.id),
+            "voice_generation_status": (
+                a.voice_announcement.generation_status.value
+                if a.voice_announcement is not None else None
+            ),
+            "voice_generation_error": (
+                a.voice_announcement.generation_error
+                if a.voice_announcement is not None else None
+            ),
             # Mirror the main-list AssetOut.unpublished so the status poller's
             # buildVariantBadge() keeps the "Unpublished" badge instead of
             # overwriting it with "none" on the first reconcile.
@@ -2664,7 +2674,10 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
     result = await db.execute(
         select(Asset)
         .where(Asset.id == asset_id, Asset.deleted_at.is_(None))
-        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+        .options(
+            selectinload(Asset.variants).selectinload(AssetVariant.profile),
+            selectinload(Asset.voice_announcement),
+        )
     )
     asset = result.scalar_one_or_none()
     if not asset:
