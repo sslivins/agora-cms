@@ -55,10 +55,27 @@ def _nightly_enabled(config: pytest.Config) -> bool:
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if _nightly_enabled(config):
-        # Nightly tests need a generous timeout: the session fixture does
-        # `docker compose up -d --build` (can take minutes on a cold cache).
+        # pytest-timeout runs with `func_only = False`, so a test's budget
+        # also covers fixture setup -- and the *first* test to run is charged
+        # for the session fixture's `docker compose up -d --build`. The
+        # per-test budget therefore has to clear STARTUP_TIMEOUT, which is
+        # what the stack bring-up bounds itself by.
+        #
+        # It must not be much larger than that, though. This budget is the
+        # only thing that attributes a wedged test, and it competes with the
+        # job's own `timeout-minutes`: if a hung test burns the whole job
+        # budget, the runner cancels the job instead of letting pytest fail
+        # it, and we lose the traceback *and* the uploaded compose logs --
+        # exactly the evidence needed to debug the hang. A flat 900s did
+        # that (95s bring-up + 166s of real tests + 900s = the full 20min
+        # cap, to the second).
+        #
+        # For calibration: across a full green run the 90 tests take 166s in
+        # total -- median 0.7s, p90 5.1s, slowest 21.8s. So STARTUP_TIMEOUT
+        # plus a minute is many times the slowest legitimate test while
+        # still leaving most of the job budget for reporting and artifacts.
         nightly_timeout = pytest.mark.timeout(
-            int(os.environ.get("NIGHTLY_TEST_TIMEOUT", "900"))
+            int(os.environ.get("NIGHTLY_TEST_TIMEOUT", str(int(STARTUP_TIMEOUT) + 60)))
         )
         for item in items:
             if "tests/nightly" in str(item.fspath).replace("\\", "/"):
