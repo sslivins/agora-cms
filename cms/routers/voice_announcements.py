@@ -104,10 +104,20 @@ def _status_out(voice_announcement: VoiceAnnouncement) -> VoiceAnnouncementStatu
 
 @router.get("/voices", response_model=VoiceCatalogOut)
 async def list_voice_catalog(
-    language: str | None = Query(default="en-US"),
+    language: str | None = Query(default=None),
     settings: Settings = Depends(get_settings),
     _user: User = Depends(require_permission(ASSETS_READ)),
 ) -> VoiceCatalogOut:
+    """List available voices, optionally scoped to a locale.
+
+    Defaults to the full catalogue. The builder relies on that: it fetches
+    once, derives the Language dropdown from the locales actually present,
+    and filters voices client-side. That way a locale Microsoft adds later
+    shows up on its own, with no list to maintain here or in the template.
+
+    Passing ``language`` still scopes the result by locale prefix, so
+    ``?language=en`` matches both en-US and en-AU.
+    """
     if not is_available(settings):
         return VoiceCatalogOut(
             voices=[],

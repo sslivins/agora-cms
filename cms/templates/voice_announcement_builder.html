@@ -53,15 +53,10 @@
         <div class="voice-builder-grid">
             <div class="form-group">
                 <label for="voice-language">Language</label>
-                <input
-                    type="text"
-                    id="voice-language"
-                    class="form-control"
-                    maxlength="16"
-                    value="{{ language }}"
-                    placeholder="en-US"
-                >
-                <small class="text-muted">Used to scope the live voice list.</small>
+                <select id="voice-language" class="form-control">
+                    <option value="{{ language }}">{{ language }}</option>
+                </select>
+                <small class="text-muted">Scopes the voice list below.</small>
             </div>
 
             <div class="form-group">
@@ -169,6 +164,9 @@
     const INITIAL_EMOTION = {{ emotion | tojson }};
     const INITIAL_RATE = {{ speech_rate | tojson }};
     const SPEECH_AVAILABLE = {{ speech_available | tojson }};
+    const INITIAL_LANGUAGE = {{ language | tojson }};
+    // Fallback when the saved locale is gone and en-US is still offered.
+    const DEFAULT_LANGUAGE = "en-US";
 
     const form = document.getElementById("voice-builder-form");
     const statusEl = document.getElementById("voice-builder-status");
@@ -177,7 +175,7 @@
     const displayNameInput = document.getElementById("voice-display-name");
     const scriptInput = document.getElementById("voice-script-text");
     const counterEl = document.getElementById("voice-script-counter");
-    const languageInput = document.getElementById("voice-language");
+    const languageSelect = document.getElementById("voice-language");
     const voiceSelect = document.getElementById("voice-select");
     const emotionSelect = document.getElementById("voice-emotion");
     const rateSelect = document.getElementById("voice-rate");
@@ -251,7 +249,7 @@
             script_text: scriptInput.value.trim(),
             voice_name: voiceSelect.value,
             emotion: emotionSelect.value || null,
-            language: (languageInput.value || "en-US").trim(),
+            language: (languageSelect.value || DEFAULT_LANGUAGE).trim(),
             speech_rate: rateSelect.value || null,
         };
         if (includeDisplayName) {
@@ -299,6 +297,94 @@
         emotionSelect.disabled = emotions.length === 0;
     }
 
+    // ── language / voice catalogue ──
+    //
+    // The catalogue is fetched once, unscoped. The Language dropdown is
+    // derived from the locales actually present in it and the voice list
+    // is filtered client-side, so:
+    //   - a locale Microsoft adds later appears on its own,
+    //   - there is no hand-maintained locale list to drift,
+    //   - switching language is instant (no refetch),
+    //   - and a locale that doesn't exist can't be typed in. The old
+    //     free-text input happily accepted "en-GB", which silently
+    //     yielded an empty voice list and a dead page.
+    let allVoices = [];
+
+    // "en-GB" -> "British English", "pt-BR" -> "Brazilian Portuguese".
+    // Intl knows the idiomatic forms and covers future locales for free;
+    // it echoes the input back for codes it doesn't recognise, in which
+    // case we just show the raw code.
+    const languageLabeller = (() => {
+        try {
+            return new Intl.DisplayNames([document.documentElement.lang || "en"],
+                                         { type: "language" });
+        } catch {
+            return null;
+        }
+    })();
+
+    function labelForLocale(locale) {
+        if (!languageLabeller) return locale;
+        let name;
+        try {
+            name = languageLabeller.of(locale);
+        } catch {
+            return locale;
+        }
+        if (!name || name === locale) return locale;
+        return name + " (" + locale + ")";
+    }
+
+    function setLanguageOptions(locales) {
+        const prior = languageSelect.value || INITIAL_LANGUAGE;
+        languageSelect.innerHTML = "";
+
+        const available = locales.slice().sort();
+        // Keep a saved locale selectable even if the catalogue no longer
+        // offers it, so opening an old announcement can't silently
+        // relabel it as some other language.
+        if (INITIAL_LANGUAGE && !available.includes(INITIAL_LANGUAGE)) {
+            available.unshift(INITIAL_LANGUAGE);
+        }
+
+        if (!available.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No languages available";
+            languageSelect.appendChild(option);
+            languageSelect.disabled = true;
+            return;
+        }
+
+        languageSelect.disabled = false;
+        for (const locale of available) {
+            const option = document.createElement("option");
+            option.value = locale;
+            option.textContent = labelForLocale(locale);
+            languageSelect.appendChild(option);
+        }
+
+        if (available.includes(prior)) {
+            languageSelect.value = prior;
+        } else if (available.includes(DEFAULT_LANGUAGE)) {
+            languageSelect.value = DEFAULT_LANGUAGE;
+        } else {
+            languageSelect.selectedIndex = 0;
+        }
+    }
+
+    function voicesForSelectedLanguage() {
+        const locale = languageSelect.value;
+        if (!locale) return allVoices;
+        return allVoices.filter(v => v.locale === locale);
+    }
+
+    function applyLanguageFilter() {
+        setVoiceOptions(voicesForSelectedLanguage());
+        speechReady = allVoices.length > 0 && voicesForSelectedLanguage().length > 0;
+        updateActionState();
+    }
+
     function setVoiceOptions(nextVoices) {
         voices = Array.isArray(nextVoices) ? nextVoices : [];
         const priorValue = voiceSelect.value || INITIAL_VOICE_NAME;
@@ -338,16 +424,19 @@
     }
 
     async function loadVoices() {
-        const language = (languageInput.value || "en-US").trim();
         voiceSelect.disabled = true;
+        languageSelect.disabled = true;
         voiceSelect.innerHTML = '<option value="">Loading voices…</option>';
         try {
-            const resp = await fetch("/api/voice-announcements/voices?language=" + encodeURIComponent(language));
+            // Unscoped on purpose -- see setLanguageOptions().
+            const resp = await fetch("/api/voice-announcements/voices");
             const data = await resp.json();
             if (!resp.ok) {
                 throw data;
             }
-            setVoiceOptions(data.voices || []);
+            allVoices = Array.isArray(data.voices) ? data.voices : [];
+            setLanguageOptions([...new Set(allVoices.map(v => v.locale).filter(Boolean))]);
+            setVoiceOptions(voicesForSelectedLanguage());
             if (data.message) {
                 setStatus(data.message, !data.available);
             } else {
@@ -356,6 +445,8 @@
             speechReady = !!data.available && voices.length > 0;
             updateActionState();
         } catch (err) {
+            allVoices = [];
+            setLanguageOptions([]);
             setVoiceOptions([]);
             setStatus(extractErrorMsg(err, "Failed to load voices."), true);
             speechReady = false;
@@ -448,7 +539,8 @@
     });
 
     voiceSelect.addEventListener("change", updateEmotionOptions);
-    languageInput.addEventListener("change", loadVoices);
+    // Language changes re-filter the already-fetched catalogue; no refetch.
+    languageSelect.addEventListener("change", applyLanguageFilter);
     scriptInput.addEventListener("input", updateCounter);
 
     // Dirty tracking. Only user-driven events are wired up: assigning
@@ -458,7 +550,7 @@
     displayNameInput.addEventListener("input", markDirty);
     displayNameInput.addEventListener("input", updateActionState);
     scriptInput.addEventListener("input", markDirty);
-    languageInput.addEventListener("input", markDirty);
+    languageSelect.addEventListener("change", markDirty);
     voiceSelect.addEventListener("change", markDirty);
     emotionSelect.addEventListener("change", markDirty);
     rateSelect.addEventListener("change", markDirty);
