@@ -38,7 +38,11 @@ jobs:
   nightly-e2e:
     name: Full compose stack E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Was 60. This job's median is 5.3 min and its worst observed run is
+    # 5.7, so 60 meant a wedged run burned an hour before anyone noticed
+    # -- exactly what happened on run 35685013108, which hung ~47 min and
+    # had to be cancelled by hand. 20 still leaves ~3.5x headroom.
+    timeout-minutes: 20
 
     steps:
       - name: Check out agora-cms

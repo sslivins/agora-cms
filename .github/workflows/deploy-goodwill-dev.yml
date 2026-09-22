@@ -70,6 +70,10 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Typically ~5 min, but the job contains a 15-minute wait loop for the
+    # new revision to report the expected version, so the legitimate worst
+    # case is ~18-20. 30 covers that without allowing an open-ended hang.
+    timeout-minutes: 30
     # Only run on success of the upstream publish workflow (or on manual dispatch).
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     environment: seattle-goodwill-dev
@@ -189,6 +193,7 @@ jobs:
   verify:
     needs: [deploy]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: seattle-goodwill-dev
     steps:
       - uses: actions/checkout@v4
