@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 _SPEECH_SCOPE = "https://cognitiveservices.azure.com/.default"
 _OUTPUT_FORMAT = "ogg-48khz-16bit-mono-opus"
+_VOICE_LIST_TTL_SECONDS = 600
+_VOICE_LIST_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
 class SpeechUnavailableError(RuntimeError):
@@ -55,6 +58,99 @@ def _build_ssml(
     )
 
 
+def _voice_cache_key(language: str | None) -> str:
+    return (language or "").strip().lower()
+
+
+def _copy_voice_list(voices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "short_name": str(v["short_name"]),
+            "display_name": str(v["display_name"]),
+            "locale": str(v["locale"]),
+            "emotions": list(v.get("emotions", [])),
+        }
+        for v in voices
+    ]
+
+
+def _locale_matches_requested(locale: str | None, language: str | None) -> bool:
+    if not language:
+        return True
+    if not locale:
+        return False
+    requested = language.strip().lower()
+    candidate = locale.strip().lower()
+    return candidate.startswith(requested)
+
+
+def _entry_has_mai_voice_2_marker(entry: dict[str, Any]) -> bool:
+    for key in ("VoiceType", "Name", "ShortName", "DisplayName", "LocalName", "Model", "ModelName", "Family"):
+        value = entry.get(key)
+        if isinstance(value, str):
+            lowered = value.lower()
+            if "mai-voice-2" in lowered or "mai voice 2" in lowered:
+                return True
+    return False
+
+
+def _simplify_voices_payload(
+    payload: list[dict[str, Any]],
+    *,
+    language: str | None,
+) -> list[dict[str, Any]]:
+    has_explicit_mai_marker = any(_entry_has_mai_voice_2_marker(entry) for entry in payload)
+    simplified: list[dict[str, Any]] = []
+
+    for entry in payload:
+        locale = entry.get("Locale")
+        if not isinstance(locale, str) or not locale.strip():
+            continue
+
+        if has_explicit_mai_marker:
+            if not _entry_has_mai_voice_2_marker(entry):
+                continue
+        else:
+            # Azure's live ``voices/list`` response does not appear to
+            # publish a stable MAI-Voice-2 family field in every
+            # environment. When the response carries no explicit
+            # MAI-specific marker at all, fall back to locale scoping so
+            # the UI still offers a useful voice subset; this heuristic
+            # should be tightened once we can inspect a deployed Speech
+            # resource's real westus payload.
+            if not _locale_matches_requested(locale, language):
+                continue
+
+        if not _locale_matches_requested(locale, language):
+            continue
+
+        short_name = entry.get("ShortName") or entry.get("Name")
+        if not isinstance(short_name, str) or not short_name.strip():
+            continue
+
+        display_name = entry.get("DisplayName") or entry.get("LocalName") or short_name
+        styles = entry.get("StyleList")
+        emotions = sorted(
+            {
+                str(style).strip()
+                for style in (styles if isinstance(styles, list) else [])
+                if str(style).strip()
+            }
+        )
+
+        simplified.append(
+            {
+                "short_name": short_name,
+                "display_name": str(display_name),
+                "locale": locale,
+                "emotions": emotions,
+            }
+        )
+
+    simplified.sort(key=lambda voice: (voice["locale"], voice["display_name"], voice["short_name"]))
+    return simplified
+
+
 class SpeechClient:
     """Async wrapper around the Azure AI Speech REST TTS endpoint."""
 
@@ -73,6 +169,10 @@ class SpeechClient:
         self._synthesis_url = (
             f"https://{settings.azure_speech_region}.tts.speech.microsoft.com/"
             "cognitiveservices/v1"
+        )
+        self._voices_url = (
+            f"https://{settings.azure_speech_region}.tts.speech.microsoft.com/"
+            "cognitiveservices/voices/list"
         )
 
     async def aclose(self) -> None:
@@ -128,3 +228,39 @@ class SpeechClient:
             voice_name,
         )
         return response.content
+
+    async def list_voices(self, language: str | None = None) -> list[dict[str, Any]]:
+        """Return a simplified, TTL-cached voice catalog for the builder UI."""
+        cache_key = _voice_cache_key(language)
+        now = time.monotonic()
+        cached = _VOICE_LIST_CACHE.get(cache_key)
+        if cached and (now - cached[0]) < _VOICE_LIST_TTL_SECONDS:
+            return _copy_voice_list(cached[1])
+
+        token = await self._token_provider()
+        response = await self._client.get(
+            self._voices_url,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text.strip()
+            raise RuntimeError(
+                f"Azure AI Speech voice listing failed: {exc.response.status_code}"
+                + (f" {detail}" if detail else "")
+            ) from exc
+
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("Azure AI Speech voice listing returned a non-list payload")
+
+        voices = _simplify_voices_payload(payload, language=language)
+        _VOICE_LIST_CACHE[cache_key] = (now, _copy_voice_list(voices))
+        logger.info(
+            "voice_announcement.voice_catalog_loaded region=%s language=%s count=%d",
+            self._settings.azure_speech_region,
+            language or "",
+            len(voices),
+        )
+        return _copy_voice_list(voices)

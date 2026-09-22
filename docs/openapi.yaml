@@ -4732,6 +4732,143 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/voice-announcements/voices:
+    get:
+      tags:
+      - voice-announcements
+      summary: List Voice Catalog
+      operationId: list_voice_catalog_api_voice_announcements_voices_get
+      parameters:
+      - name: language
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: en-US
+          title: Language
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceCatalogOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/voice-announcements:
+    post:
+      tags:
+      - voice-announcements
+      summary: Create Voice Announcement
+      operationId: create_voice_announcement_api_voice_announcements_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceAnnouncementCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAnnouncementCreateOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/voice-announcements/{asset_id}:
+    get:
+      tags:
+      - voice-announcements
+      summary: Get Voice Announcement Status
+      operationId: get_voice_announcement_status_api_voice_announcements__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAnnouncementStatusOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - voice-announcements
+      summary: Update Voice Announcement
+      operationId: update_voice_announcement_api_voice_announcements__asset_id__put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceAnnouncementUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAnnouncementStatusOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/voice-announcements/preview:
+    post:
+      tags:
+      - voice-announcements
+      summary: Preview Voice Announcement
+      operationId: preview_voice_announcement_api_voice_announcements_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceAnnouncementPreviewIn'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /healthz:
     get:
       tags:
@@ -6777,6 +6914,16 @@ components:
       required:
       - catalog_url
       title: ImagerSettingsUpdateBody
+    JobStatus:
+      type: string
+      enum:
+      - pending
+      - processing
+      - done
+      - failed
+      - cancelled
+      title: JobStatus
+      description: Lifecycle state of a job row.
     JobStatusOut:
       properties:
         job_id:
@@ -8093,6 +8240,205 @@ components:
       - msg
       - type
       title: ValidationError
+    VoiceAnnouncementCreate:
+      properties:
+        script_text:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Script Text
+        voice_name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Voice Name
+        emotion:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Emotion
+        language:
+          type: string
+          maxLength: 16
+          minLength: 2
+          title: Language
+          default: en-US
+        speech_rate:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Speech Rate
+        display_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Display Name
+      type: object
+      required:
+      - script_text
+      - voice_name
+      - display_name
+      title: VoiceAnnouncementCreate
+    VoiceAnnouncementCreateOut:
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        generation_status:
+          $ref: '#/components/schemas/JobStatus'
+        edit_url:
+          type: string
+          title: Edit Url
+      type: object
+      required:
+      - asset_id
+      - generation_status
+      - edit_url
+      title: VoiceAnnouncementCreateOut
+    VoiceAnnouncementPreviewIn:
+      properties:
+        script_text:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Script Text
+        voice_name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Voice Name
+        emotion:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Emotion
+        language:
+          type: string
+          maxLength: 16
+          minLength: 2
+          title: Language
+          default: en-US
+        speech_rate:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Speech Rate
+      type: object
+      required:
+      - script_text
+      - voice_name
+      title: VoiceAnnouncementPreviewIn
+    VoiceAnnouncementStatusOut:
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        generation_status:
+          $ref: '#/components/schemas/JobStatus'
+        generation_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Generation Error
+        last_generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Generated At
+      type: object
+      required:
+      - asset_id
+      - generation_status
+      title: VoiceAnnouncementStatusOut
+    VoiceAnnouncementUpdate:
+      properties:
+        script_text:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Script Text
+        voice_name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Voice Name
+        emotion:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Emotion
+        language:
+          type: string
+          maxLength: 16
+          minLength: 2
+          title: Language
+          default: en-US
+        speech_rate:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Speech Rate
+        display_name:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Display Name
+      type: object
+      required:
+      - script_text
+      - voice_name
+      title: VoiceAnnouncementUpdate
+    VoiceCatalogOut:
+      properties:
+        voices:
+          items:
+            $ref: '#/components/schemas/VoiceOptionOut'
+          type: array
+          title: Voices
+        available:
+          type: boolean
+          title: Available
+          default: true
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+      type: object
+      title: VoiceCatalogOut
+    VoiceOptionOut:
+      properties:
+        short_name:
+          type: string
+          title: Short Name
+        display_name:
+          type: string
+          title: Display Name
+        locale:
+          type: string
+          title: Locale
+        emotions:
+          items:
+            type: string
+          type: array
+          title: Emotions
+      type: object
+      required:
+      - short_name
+      - display_name
+      - locale
+      title: VoiceOptionOut
   securitySchemes:
     sessionCookie:
       type: apiKey
@@ -8119,3 +8465,4 @@ tags:
 - name: features
 - name: system
   description: Health checks and system endpoints.
+- name: voice-announcements

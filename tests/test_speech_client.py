@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from cms.config import Settings
+from cms.services import speech_client as speech_client_module
 from cms.services.speech_client import SpeechClient, SpeechUnavailableError, is_available
 
 
@@ -92,4 +93,71 @@ async def test_synthesize_builds_expected_ssml_and_headers():
     assert '<mstts:express-as style="cheerful">' in body
     assert '<prosody rate="+10%">' in body
     assert "Hello &amp; welcome &lt;team&gt; &quot;friends&quot; &apos;neighbors&apos;" in body
+    assert fake_credential.closed is True
+
+
+@pytest.mark.asyncio
+async def test_list_voices_filters_and_caches():
+    seen: dict[str, int] = {"calls": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["calls"] += 1
+        assert str(request.url) == (
+            "https://westus.tts.speech.microsoft.com/cognitiveservices/voices/list"
+        )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "ShortName": "en-US-Ava:MAI-Voice-2",
+                    "DisplayName": "Ava",
+                    "Locale": "en-US",
+                    "VoiceType": "MAI-Voice-2",
+                    "StyleList": ["cheerful", "sad", "cheerful"],
+                },
+                {
+                    "ShortName": "en-GB-Old",
+                    "DisplayName": "Old",
+                    "Locale": "en-GB",
+                    "VoiceType": "Standard",
+                },
+            ],
+        )
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+    fake_credential = _FakeCredential()
+
+    def _client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    async def _token_provider():
+        return "fake-token"
+
+    settings = Settings(
+        database_url="sqlite:///x",
+        secret_key="x",
+        azure_speech_endpoint="https://example.cognitiveservices.azure.com/",
+        azure_speech_region="westus",
+    )
+
+    speech_client_module._VOICE_LIST_CACHE.clear()
+    with patch("cms.services.speech_client.DefaultAzureCredential", return_value=fake_credential), \
+         patch("cms.services.speech_client.get_bearer_token_provider", return_value=_token_provider), \
+         patch("cms.services.speech_client.httpx.AsyncClient", side_effect=_client_factory):
+        async with SpeechClient(settings) as client:
+            first = await client.list_voices(language="en-US")
+            second = await client.list_voices(language="en-US")
+
+    assert first == [
+        {
+            "short_name": "en-US-Ava:MAI-Voice-2",
+            "display_name": "Ava",
+            "locale": "en-US",
+            "emotions": ["cheerful", "sad"],
+        }
+    ]
+    assert second == first
+    assert seen["calls"] == 1
     assert fake_credential.closed is True

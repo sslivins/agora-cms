@@ -1690,6 +1690,13 @@ function previewAsset(assetId, filename, assetType) {
         video.autoplay = true;
         video.className = "preview-media";
         box.appendChild(video);
+    } else if (assetType === "voice_announcement") {
+        const audio = document.createElement("audio");
+        audio.src = url;
+        audio.controls = true;
+        audio.autoplay = true;
+        audio.style.width = "min(420px, 100%)";
+        box.appendChild(audio);
     } else {
         const img = document.createElement("img");
         img.src = url;
