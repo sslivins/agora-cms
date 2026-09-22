@@ -166,14 +166,15 @@ class SpeechClient:
             self._credential, _SPEECH_SCOPE
         )
         self._client = httpx.AsyncClient(timeout=60.0)
-        self._synthesis_url = (
-            f"https://{settings.azure_speech_region}.tts.speech.microsoft.com/"
-            "cognitiveservices/v1"
-        )
-        self._voices_url = (
-            f"https://{settings.azure_speech_region}.tts.speech.microsoft.com/"
-            "cognitiveservices/voices/list"
-        )
+        # Managed-identity / Microsoft Entra ID auth is only honored on the
+        # resource's custom-domain endpoint (e.g.
+        # https://<resource>.cognitiveservices.azure.com) -- the shared
+        # regional endpoint (e.g. https://westus.tts.speech.microsoft.com)
+        # only accepts subscription-key auth and returns 401 for bearer
+        # tokens, even when the token/RBAC grant is otherwise valid.
+        custom_domain = settings.azure_speech_endpoint.rstrip("/")
+        self._synthesis_url = f"{custom_domain}/cognitiveservices/v1"
+        self._voices_url = f"{custom_domain}/cognitiveservices/voices/list"
 
     async def aclose(self) -> None:
         await self._client.aclose()
