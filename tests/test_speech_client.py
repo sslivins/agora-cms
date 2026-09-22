@@ -116,6 +116,17 @@ async def test_list_voices_filters_and_caches():
                     "StyleList": ["cheerful", "sad", "cheerful"],
                 },
                 {
+                    # Azure publishes a latency-optimised twin for every
+                    # MAI-Voice-2 voice. Announcements are generated ahead
+                    # of playback, so the twin buys us nothing and only
+                    # doubles the dropdown -- it must be filtered out.
+                    "ShortName": "en-US-Ava:MAI-Voice-2-Flash",
+                    "DisplayName": "Ava MAI-Voice-2-Flash",
+                    "Locale": "en-US",
+                    "VoiceType": "MAI-Voice-2",
+                    "StyleList": ["cheerful", "sad"],
+                },
+                {
                     "ShortName": "en-GB-Old",
                     "DisplayName": "Old",
                     "Locale": "en-GB",
@@ -161,3 +172,4 @@ async def test_list_voices_filters_and_caches():
     assert second == first
     assert seen["calls"] == 1
     assert fake_credential.closed is True
+    assert not any("Flash" in v["short_name"] for v in first)

@@ -94,6 +94,29 @@ def _entry_has_mai_voice_2_marker(entry: dict[str, Any]) -> bool:
     return False
 
 
+def _is_flash_variant(short_name: str) -> bool:
+    """Is this the latency-optimised twin of another voice?
+
+    Azure publishes every MAI-Voice-2 voice twice: a standard entry and a
+    ``-Flash`` entry. Measured against our deployment, Flash synthesises
+    roughly 25-30% faster (e.g. Ethan 1.67s -> 1.18s for a 128-character
+    script) at some cost to expressive nuance.
+
+    Announcements are generated ahead of playback, not in a live
+    conversation, so that saving is worth nothing to us -- while showing
+    both variants doubles the dropdown to near-identical entries the user
+    has no basis to choose between. The catalogue is a perfect 1:1 pairing
+    (47 standard / 47 Flash across 18 locales, with identical emotion
+    lists per pair), so dropping Flash costs no voice, locale or style.
+
+    Assets already saved against a Flash voice keep working: synthesis
+    passes the stored voice name straight through, and the builder's
+    setVoiceOptions() re-inserts an unknown saved voice as a "(current
+    selection)" option rather than silently switching it.
+    """
+    return short_name.strip().endswith("-Flash")
+
+
 def _simplify_voices_payload(
     payload: list[dict[str, Any]],
     *,
@@ -126,6 +149,9 @@ def _simplify_voices_payload(
 
         short_name = entry.get("ShortName") or entry.get("Name")
         if not isinstance(short_name, str) or not short_name.strip():
+            continue
+
+        if _is_flash_variant(short_name):
             continue
 
         display_name = entry.get("DisplayName") or entry.get("LocalName") or short_name
