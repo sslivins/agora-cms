@@ -19,6 +19,7 @@ class AssetType(str, PyEnum):
     SAVED_STREAM = "saved_stream"  # captured stream — downloaded & transcoded for offline playback
     SLIDESHOW = "slideshow"    # synthetic asset — ordered list of image/video sources resolved on the device
     COMPOSED = "composed"      # CMS-authored multi-widget slide; rendered to a self-contained HTML bundle
+    VOICE_ANNOUNCEMENT = "voice_announcement"  # CMS-authored TTS audio asset synthesized by worker
 
 
 class VariantStatus(str, PyEnum):

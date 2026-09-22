@@ -21,6 +21,12 @@ class SharedSettings(BaseSettings):
     azure_storage_account_key: str | None = None
     azure_sas_expiry_hours: int = 1
 
+    # Azure AI Speech (Voice Announcements backend). Shared because the
+    # worker performs synthesis while the CMS may need the same endpoint
+    # metadata for future UI/API surfaces.
+    azure_speech_endpoint: str = ""
+    azure_speech_region: str = ""
+
     # ── Imager (browser-driven Pi image provisioning, Option E) ────
     # NOTE (PR 7): the catalog URL was previously a deploy-time env var
     # (``base_image_catalog_url``) but is now stored as a runtime setting

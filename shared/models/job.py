@@ -26,6 +26,7 @@ class JobType(str, PyEnum):
     """What kind of work a job represents."""
     VARIANT_TRANSCODE = "variant_transcode"  # target_id → asset_variants.id
     STREAM_CAPTURE = "stream_capture"        # target_id → assets.id (SAVED_STREAM)
+    VOICE_SYNTHESIS = "voice_synthesis"      # target_id → assets.id (VOICE_ANNOUNCEMENT)
     # Imager flows (Option E).  Schema/dispatch are wired in PR 2;
     # the actual handlers land in PR 3.  Both target a UUID PK on the
     # corresponding imager table.

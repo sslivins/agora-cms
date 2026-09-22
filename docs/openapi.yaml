@@ -5129,6 +5129,7 @@ components:
       - saved_stream
       - slideshow
       - composed
+      - voice_announcement
       title: AssetType
     AssetUsage:
       properties:

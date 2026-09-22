@@ -33,6 +33,7 @@ from cms.models.chat_message import ChatMessage  # noqa: F401
 from cms.models.chat_pending_approval import ChatPendingApproval  # noqa: F401
 from cms.models.chat_thread import ChatThread  # noqa: F401
 from cms.models.composed_slide import ComposedSlide  # noqa: F401
+from cms.models.voice_announcement import VoiceAnnouncement  # noqa: F401
 from cms.models.user import Role, User, UserGroup  # noqa: F401
 
 # ── CMS-only relationships ──
@@ -51,6 +52,14 @@ Asset.tags = relationship(
     secondary="asset_tags",
     order_by="Tag.name",
     lazy="selectin",
+)
+
+Asset.voice_announcement = relationship(
+    "VoiceAnnouncement",
+    uselist=False,
+    lazy="selectin",
+    passive_deletes=True,
+    back_populates="asset",
 )
 
 # Group-scoped device tags. Attached here (rather than on Device) to keep the

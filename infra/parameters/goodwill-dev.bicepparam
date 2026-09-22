@@ -90,6 +90,14 @@ param azureOpenAIChatModel = 'gpt-4o'
 param azureOpenAIChatModelVersion = '2024-11-20'
 param azureOpenAIChatCapacity = 30
 
+// Opt this environment into the Voice Announcements backend.
+// westus keeps the Speech resource co-located with the dev RG, but
+// MAI-Voice-2 preview availability is narrower than standard neural
+// voices — verify the target voice catalog still includes westus
+// before first real rollout and move this if preview support shifts.
+param deployAzureSpeech = true
+param azureSpeechRegion = 'westus'
+
 // Secure params — passed via the deploy-goodwill-dev workflow, never commit values:
 // param postgresAdminPassword = '<set-via-cli>'
 // param cmsSecretKey = '<set-via-cli>'

@@ -268,6 +268,7 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         recover_interrupted,
         transcode_variant_by_id,
     )
+    from worker.voice_synthesis import synthesize_voice_announcement_by_id
     from worker.imager_handlers import (
         TerminalImagerError,
         import_base_image_by_id,
@@ -512,6 +513,14 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 if deleted_at is not None:
                     cancel_now = True
                     cancel_reason = f"asset soft-deleted at {deleted_at}"
+            elif job.type == JobType.VOICE_SYNTHESIS:
+                row = await db.execute(
+                    select(_Asset.deleted_at).where(_Asset.id == job.target_id)
+                )
+                deleted_at = row.scalar_one_or_none()
+                if deleted_at is not None:
+                    cancel_now = True
+                    cancel_reason = f"asset soft-deleted at {deleted_at}"
 
         if cancel_now:
             from sqlalchemy import update as _sa_update
@@ -520,6 +529,17 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 .where(Job.id == job_id)
                 .values(status=JobStatus.CANCELLED, error_message=cancel_reason[:2000])
             )
+            if job.type == JobType.VOICE_SYNTHESIS:
+                from cms.models.voice_announcement import VoiceAnnouncement
+
+                await db.execute(
+                    _sa_update(VoiceAnnouncement)
+                    .where(VoiceAnnouncement.asset_id == job.target_id)
+                    .values(
+                        generation_status=JobStatus.CANCELLED,
+                        generation_error=cancel_reason[:2000],
+                    )
+                )
             await db.commit()
             logger.info("Job %s cancelled pre-transcode: %s", job_id, cancel_reason)
             await _stop_heartbeat()
@@ -546,6 +566,10 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             success = await transcode_variant_by_id(session_factory, asset_dir, job.target_id)
         elif job.type == JobType.STREAM_CAPTURE:
             success = await capture_stream_by_id(session_factory, asset_dir, job.target_id)
+        elif job.type == JobType.VOICE_SYNTHESIS:
+            success = await synthesize_voice_announcement_by_id(
+                session_factory, asset_dir, job.target_id
+            )
         elif job.type == JobType.IMAGE_IMPORT:
             success = await import_base_image_by_id(session_factory, settings, job.target_id)
         elif job.type == JobType.IMAGE_PROVISION:
@@ -657,6 +681,17 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                         status=VariantStatus.CANCELLED,
                         progress=0.0,
                         error_message="cancelled mid-transcode",
+                    )
+                )
+            elif job.type == JobType.VOICE_SYNTHESIS:
+                from cms.models.voice_announcement import VoiceAnnouncement
+
+                await db.execute(
+                    _sa_update(VoiceAnnouncement)
+                    .where(VoiceAnnouncement.asset_id == job.target_id)
+                    .values(
+                        generation_status=JobStatus.CANCELLED,
+                        generation_error="cancelled mid-transcode",
                     )
                 )
             await db.commit()

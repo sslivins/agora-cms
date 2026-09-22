@@ -75,6 +75,13 @@ param azureOpenAIDeployment string = ''
 @description('Model name behind the chat deployment (e.g. "gpt-4o"). Pricing/telemetry use this to label the model and compute USD; deployment names like "chat" do not contain a model substring so the runtime cannot infer it. Empty when the Assistant feature is not deployed in this environment.')
 param azureOpenAIModel string = ''
 
+// ── Azure AI Speech (Voice Announcements backend) ──
+@description('Azure AI Speech endpoint URL (e.g. https://agoragwdev-speech.cognitiveservices.azure.com/). Empty when Voice Announcements backend is not deployed in this environment.')
+param azureSpeechEndpoint string = ''
+
+@description('Azure region backing the Speech account (used to build the region-scoped synthesis host, e.g. westus). Empty when Voice Announcements backend is not deployed in this environment.')
+param azureSpeechRegion string = ''
+
 // ── Blue/green deploy controls (Multiple revision mode) ──
 @description('Revision suffix for the CMS Container App. Each deploy MUST pass a unique value (e.g. "v1-12-34") so a brand-new revision is created at 0% traffic. The workflow flips traffic to it after smoke probes pass.')
 param cmsRevisionSuffix string = ''
@@ -343,6 +350,14 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: azureOpenAIModel
             }
             {
+              name: 'AGORA_CMS_AZURE_SPEECH_ENDPOINT'
+              value: azureSpeechEndpoint
+            }
+            {
+              name: 'AGORA_CMS_AZURE_SPEECH_REGION'
+              value: azureSpeechRegion
+            }
+            {
               // Tag every emitted record so we can distinguish prod from
               // dev/staging in shared workbooks and KQL.
               name: 'OTEL_RESOURCE_ATTRIBUTES'
@@ -450,6 +465,9 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
   name: workerJobName
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     environmentId: containerAppsEnv.id
     configuration: {
@@ -524,6 +542,14 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
               name: 'AZURE_STORAGE_CONNECTION_STRING'
               secretRef: 'storage-connection-string'
             }
+            {
+              name: 'AGORA_CMS_AZURE_SPEECH_ENDPOINT'
+              value: azureSpeechEndpoint
+            }
+            {
+              name: 'AGORA_CMS_AZURE_SPEECH_REGION'
+              value: azureSpeechRegion
+            }
           ]
           volumeMounts: [
             {
@@ -554,6 +580,7 @@ output mcpLatestRevisionName string = mcpApp.properties.latestRevisionName
 output environmentId string = containerAppsEnv.id
 output cmsPrincipalId string = cmsApp.identity.principalId
 output mcpPrincipalId string = mcpApp.identity.principalId
+output workerPrincipalId string = workerJob.identity.principalId
 output logAnalyticsWorkspaceId string = logAnalytics.id
 output appInsightsId string = appInsights.id
 output appInsightsName string = appInsights.name
