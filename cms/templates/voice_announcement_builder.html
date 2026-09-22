@@ -311,13 +311,15 @@
     let allVoices = [];
 
     // "en-GB" -> "British English", "pt-BR" -> "Brazilian Portuguese".
-    // Intl knows the idiomatic forms and covers future locales for free;
-    // it echoes the input back for codes it doesn't recognise, in which
-    // case we just show the raw code.
+    // Intl knows the idiomatic forms ("British English", "Brazilian
+    // Portuguese") and covers future locales for free. fallback:"none"
+    // makes it return undefined for codes it has no data for, instead of
+    // synthesising something like "xx (Unknown Region)" that would hide
+    // the real code from the operator.
     const languageLabeller = (() => {
         try {
             return new Intl.DisplayNames([document.documentElement.lang || "en"],
-                                         { type: "language" });
+                                         { type: "language", fallback: "none" });
         } catch {
             return null;
         }
@@ -331,8 +333,20 @@
         } catch {
             return locale;
         }
+        // undefined => Intl has no data for this code; show it raw so the
+        // operator can still see which locale they're selecting.
         if (!name || name === locale) return locale;
-        return name + " (" + locale + ")";
+        return name;
+    }
+
+    // Azure's display names carry the model ("Klaus MAI-Voice-2"), and the
+    // voice list is already scoped to the selected language, so neither the
+    // model nor the locale adds anything in the dropdown. Strip the model
+    // suffix but keep the raw name if that would leave nothing behind.
+    function labelForVoice(voice) {
+        const raw = (voice.display_name || voice.short_name || "").trim();
+        const stripped = raw.replace(/\s*MAI-Voice-\d+(-Flash)?\s*$/i, "").trim();
+        return stripped || raw;
     }
 
     function setLanguageOptions(locales) {
@@ -404,7 +418,7 @@
         for (const voice of voices) {
             const option = document.createElement("option");
             option.value = voice.short_name;
-            option.textContent = voice.display_name + " (" + voice.locale + ")";
+            option.textContent = labelForVoice(voice);
             voiceSelect.appendChild(option);
         }
 
