@@ -1087,7 +1087,11 @@ paths:
   /api/assets/status:
     get:
       summary: Assets Status Json
-      description: Lightweight JSON for assets page polling — filtered by user's group access.
+      description: |-
+        Lightweight JSON for assets page polling — filtered by user's group access.
+
+        Returns every visible asset. The schedules page relies on this to resolve
+        readiness for assets that are not on screen, so it stays unscoped.
       operationId: assets_status_json_api_assets_status_get
       responses:
         '200':
@@ -1095,6 +1099,33 @@ paths:
           content:
             application/json:
               schema: {}
+    post:
+      summary: Assets Status Json Scoped
+      description: |-
+        Id-scoped twin of ``GET /status`` for the asset library poller.
+
+        Same payload shape, but the per-asset detail covers only ``ids``. Sent as
+        a POST because the library accumulates pages as you scroll and the id list
+        outgrows a comfortable query string.
+      operationId: assets_status_json_scoped_api_assets_status_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetsStatusQuery'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets:
     get:
       summary: List Assets
@@ -5470,6 +5501,18 @@ components:
       type: object
       title: AssetViewPatch
       description: Request body for ``PATCH /api/asset-views/{id}``. All fields optional.
+    AssetsStatusQuery:
+      properties:
+        ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 500
+          title: Ids
+      type: object
+      title: AssetsStatusQuery
+      description: Ids the caller already has rendered and wants fresh state for.
     AssistantBudgetIn:
       properties:
         default_cap:

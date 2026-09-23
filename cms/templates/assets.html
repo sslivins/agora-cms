@@ -982,12 +982,29 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         }
     }
 
-    setInterval(async () => {
+    // Recursive setTimeout rather than setInterval: setInterval does not wait
+    // for the previous async tick, so slow responses overlap and a stale one
+    // can land after a fresh one and visually revert it.
+    let _pollGeneration = 0;
+    async function pollTick() {
         if (isModalOpen()) return;
+        const gen = ++_pollGeneration;
         try {
-            const res = await fetch("/api/assets/status");
+            // Only ask about rows we actually have. The table renders 50 at a
+            // time, but the endpoint would otherwise return every visible
+            // asset fully hydrated, every 5s, per open tab.
+            const ids = Array.from(
+                document.querySelectorAll('tr.asset-row[data-asset-id]')
+            ).map(r => r.dataset.assetId);
+            const res = await fetch("/api/assets/status", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ids: ids })
+            });
             if (!res.ok) return;
             const data = await res.json();
+            // A newer tick already started; its response wins.
+            if (gen !== _pollGeneration) return;
             const newState = {
                 asset_count: data.asset_count,
                 variant_ready: data.variant_ready,
@@ -999,15 +1016,31 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
             // Always update live fields in-place
             if (data.assets) updateLiveAssets(data.assets);
 
-            // Scope or count changed — update DOM inline (no reload)
+            // Scope or count changed — update DOM inline (no reload).
+            // Membership changes need the full picture: the scoped payload
+            // only echoes ids we already have, so it can never tell us about
+            // an asset that just became visible. This is the rare path, so
+            // fall back to the unscoped call and keep today's exact
+            // semantics.
             const scopeChanged = lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash;
             const countChanged = newState.asset_count !== lastState.asset_count;
             if (scopeChanged || countChanged) {
-                (window.applyScopeChanges || applyScopeChanges)(data.assets);
+                const full = await fetch("/api/assets/status");
+                if (gen !== _pollGeneration) return;
+                if (full.ok) {
+                    const fullData = await full.json();
+                    if (gen !== _pollGeneration) return;
+                    (window.applyScopeChanges || applyScopeChanges)(fullData.assets);
+                }
             }
             lastState = newState;
         } catch (e) { /* ignore */ }
-    }, 5000);
+    }
+    (function scheduleNextPoll() {
+        setTimeout(async () => {
+            try { await pollTick(); } finally { scheduleNextPoll(); }
+        }, 5000);
+    })();
 })();
 
 function copyChecksum(btn, checksum) {

@@ -10,6 +10,93 @@ def _make_upload(filename: str, content: bytes = b"fakecontent"):
 
 
 @pytest.mark.asyncio
+class TestAssetStatusScoped:
+    """POST /api/assets/status — id-scoped twin used by the library poller."""
+
+    async def _two_assets(self, db_session):
+        from cms.models.asset import Asset, AssetType
+
+        a = Asset(filename="scoped_a.mp4", asset_type=AssetType.VIDEO,
+                  size_bytes=10, checksum="a")
+        b = Asset(filename="scoped_b.mp4", asset_type=AssetType.VIDEO,
+                  size_bytes=20, checksum="b")
+        db_session.add_all([a, b])
+        await db_session.commit()
+        return a, b
+
+    async def test_detail_limited_to_requested_ids(self, client, db_session):
+        a, b = await self._two_assets(db_session)
+
+        resp = await client.post("/api/assets/status", json={"ids": [str(a.id)]})
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert [x["id"] for x in data["assets"]] == [str(a.id)]
+
+    async def test_asset_count_stays_global(self, client, db_session):
+        """The count tripwire must still notice assets outside the window.
+
+        Otherwise the poller could never detect that a new asset appeared and
+        would stop inserting rows entirely.
+        """
+        a, b = await self._two_assets(db_session)
+
+        resp = await client.post("/api/assets/status", json={"ids": [str(a.id)]})
+        data = resp.json()
+
+        assert len(data["assets"]) == 1
+        assert data["asset_count"] == 2
+
+    async def test_scope_hash_matches_unscoped(self, client, db_session):
+        """scope_hash is the other tripwire and must not narrow with ids."""
+        a, b = await self._two_assets(db_session)
+
+        scoped = (await client.post(
+            "/api/assets/status", json={"ids": [str(a.id)]})).json()
+        unscoped = (await client.get("/api/assets/status")).json()
+
+        assert scoped["scope_hash"] == unscoped["scope_hash"]
+
+    async def test_empty_ids_returns_no_detail(self, client, db_session):
+        a, b = await self._two_assets(db_session)
+
+        data = (await client.post("/api/assets/status", json={"ids": []})).json()
+
+        assert data["assets"] == []
+        assert data["asset_count"] == 2
+
+    async def test_unknown_id_is_omitted_not_errored(self, client, db_session):
+        """Deleted-out-from-under-us ids must not 500 the poller.
+
+        The client drives this list from the DOM, so it always lags reality.
+        Omission is also what tells applyScopeChanges to drop the row.
+        """
+        import uuid as _uuid
+
+        a, b = await self._two_assets(db_session)
+
+        resp = await client.post(
+            "/api/assets/status",
+            json={"ids": [str(a.id), str(_uuid.uuid4())]},
+        )
+        assert resp.status_code == 200
+        assert [x["id"] for x in resp.json()["assets"]] == [str(a.id)]
+
+    async def test_scoped_payload_matches_unscoped_for_same_asset(
+        self, client, db_session
+    ):
+        """Scoping must only narrow the list, never change an asset's fields."""
+        a, b = await self._two_assets(db_session)
+
+        scoped = (await client.post(
+            "/api/assets/status", json={"ids": [str(a.id)]})).json()
+        unscoped = (await client.get("/api/assets/status")).json()
+
+        from_unscoped = next(x for x in unscoped["assets"] if x["id"] == str(a.id))
+        assert scoped["assets"][0] == from_unscoped
+
+
+@pytest.mark.asyncio
 class TestAssetStatus:
     async def test_status_empty(self, client):
         resp = await client.get("/api/assets/status")
