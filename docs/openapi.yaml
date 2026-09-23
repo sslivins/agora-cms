@@ -5510,6 +5510,10 @@ components:
           type: array
           maxItems: 500
           title: Ids
+        include_ids:
+          type: boolean
+          title: Include Ids
+          default: false
       type: object
       title: AssetsStatusQuery
       description: Ids the caller already has rendered and wants fresh state for.
