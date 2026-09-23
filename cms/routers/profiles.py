@@ -893,8 +893,9 @@ async def profiles_status_json(
     # Profile variant summaries.
     #
     # Joined to Asset so variants belonging to soft-deleted assets don't
-    # count. Without that the totals include work that will never be done
-    # and the denominator never reaches ready.
+    # count, and filtered on the variant's own deleted_at so superseded
+    # variants don't either. Without both the totals include work that will
+    # never be done and the denominator never reaches ready.
     result = await db.execute(
         select(DeviceProfile).order_by(DeviceProfile.name)
     )
@@ -903,7 +904,11 @@ async def profiles_status_json(
         total_var = (await db.execute(
             select(func.count(AssetVariant.id))
             .join(Asset, Asset.id == AssetVariant.source_asset_id)
-            .where(AssetVariant.profile_id == p.id, Asset.deleted_at.is_(None))
+            .where(
+                AssetVariant.profile_id == p.id,
+                AssetVariant.deleted_at.is_(None),
+                Asset.deleted_at.is_(None),
+            )
         )).scalar() or 0
         ready_var = (await db.execute(
             select(func.count(AssetVariant.id))
@@ -911,6 +916,7 @@ async def profiles_status_json(
             .where(
                 AssetVariant.profile_id == p.id,
                 AssetVariant.status == VariantStatus.READY,
+                AssetVariant.deleted_at.is_(None),
                 Asset.deleted_at.is_(None),
             )
         )).scalar() or 0
@@ -923,12 +929,24 @@ async def profiles_status_json(
 
     # Transcode queue (pending / processing / failed) — scoped to visible assets.
     #
-    # Deleting an asset is a soft delete, and the worker only marks its jobs
-    # terminal once it picks the message up. Until then the variant rows
-    # survive, so without the deleted_at filter the Transcoding Queue card
-    # keeps listing work for assets the user has already deleted and cannot
-    # see anywhere else. Admins saw this most: _visible_asset_ids returns
-    # None for them, so nothing else narrowed the query.
+    # Two soft-delete filters, both needed:
+    #
+    #   Asset.deleted_at         Deleting an asset is a soft delete, and the
+    #                            worker only marks the job CANCELLED when it
+    #                            picks the message up -- it leaves the variant
+    #                            row at PENDING. Without this filter the card
+    #                            keeps listing work for assets the user has
+    #                            already deleted and cannot see anywhere else.
+    #                            Admins saw this most: _visible_asset_ids
+    #                            returns None for them, so nothing else
+    #                            narrowed the query.
+    #
+    #   AssetVariant.deleted_at  Superseding a profile leaves old variants in
+    #                            place on purpose (latest-READY-wins) and the
+    #                            reaper soft-deletes them once the replacement
+    #                            is READY. A variant cancelled mid-flight keeps
+    #                            its PENDING status, so without this filter a
+    #                            routine profile edit strands rows in the card.
     visible = await _visible_asset_ids(user, db)
     queue_q = (
         select(AssetVariant)
@@ -937,6 +955,7 @@ async def profiles_status_json(
             AssetVariant.status.in_(
                 [VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]
             ),
+            AssetVariant.deleted_at.is_(None),
             Asset.deleted_at.is_(None),
         )
         .order_by(AssetVariant.created_at)

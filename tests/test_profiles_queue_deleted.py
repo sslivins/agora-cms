@@ -98,3 +98,56 @@ class TestQueueExcludesDeletedAssets:
         )
 
         assert total_after == total_before - 1
+
+
+class TestQueueExcludesSupersededVariants:
+    """The asset is alive here -- only the variant is retired.
+
+    Editing a profile supersedes its variants: the old rows are left in
+    place on purpose so devices keep playing the last good blob, and the
+    reaper soft-deletes them once the replacement is READY. A variant
+    cancelled mid-flight keeps its PENDING status, so a routine profile
+    edit could strand rows in the queue card with no asset deletion
+    involved at all.
+    """
+
+    async def test_soft_deleted_variant_leaves_the_queue(self, client, db_session):
+        from datetime import datetime, timezone
+
+        _asset, variant, _profile = await _asset_with_pending_variant(
+            db_session, "queue-superseded.mp4"
+        )
+
+        assert str(variant.id) in {
+            q["id"] for q in (await client.get("/api/profiles/status")).json()["queue"]
+        }
+
+        variant.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        data = (await client.get("/api/profiles/status")).json()
+        assert str(variant.id) not in {q["id"] for q in data["queue"]}
+
+    async def test_soft_deleted_variant_leaves_the_profile_totals(
+        self, client, db_session
+    ):
+        from datetime import datetime, timezone
+
+        _asset, variant, profile = await _asset_with_pending_variant(
+            db_session, "queue-superseded-totals.mp4"
+        )
+
+        before = (await client.get("/api/profiles/status")).json()
+        total_before = next(
+            p["total_variants"] for p in before["profiles"] if p["id"] == str(profile.id)
+        )
+
+        variant.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        after = (await client.get("/api/profiles/status")).json()
+        total_after = next(
+            p["total_variants"] for p in after["profiles"] if p["id"] == str(profile.id)
+        )
+
+        assert total_after == total_before - 1
