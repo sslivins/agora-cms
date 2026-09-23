@@ -469,6 +469,11 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         try:
             from worker.imager_handlers import mark_target_failed_on_exhaustion
             await mark_target_failed_on_exhaustion(session_factory, job)
+            # The imager helper no-ops on transcode jobs, which left an
+            # exhausted variant stuck at PENDING/PROCESSING forever -- shown
+            # to the user as queued work that will never run.
+            from worker.transcoder import mark_variant_failed_on_exhaustion
+            await mark_variant_failed_on_exhaustion(session_factory, job)
         except Exception:
             logger.exception(
                 "Failed to mirror poison-job %s onto target row -- "
@@ -527,9 +532,41 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             await db.execute(
                 _sa_update(Job)
                 .where(Job.id == job_id)
-                .values(status=JobStatus.CANCELLED, error_message=cancel_reason[:2000])
+                .values(
+                    status=JobStatus.CANCELLED,
+                    error_message=cancel_reason[:2000],
+                )
             )
-            if job.type == JobType.VOICE_SYNTHESIS:
+            if job.type == JobType.VARIANT_TRANSCODE:
+                # Mirror the terminal state onto the variant, exactly as the
+                # mid-transcode cancel branch below does.
+                #
+                # Omitting this stranded the variant at PENDING forever. The
+                # supersession sweep only soft-deletes variants that are
+                # READY / FAILED / CANCELLED, so a PENDING one is never swept
+                # and -- when the asset is still alive, i.e. a profile edit
+                # rather than a delete -- nothing else ever revisits it. Each
+                # profile edit that cancelled a not-yet-started variant left
+                # a permanent phantom row in the Transcoding Queue card.
+                #
+                # Guarded on the variant still being non-terminal so we never
+                # clobber a READY row: a late/duplicate delivery of an
+                # already-cancelled job must not undo good output.
+                await db.execute(
+                    _sa_update(AssetVariant)
+                    .where(
+                        AssetVariant.id == job.target_id,
+                        AssetVariant.status.in_(
+                            [VariantStatus.PENDING, VariantStatus.PROCESSING]
+                        ),
+                    )
+                    .values(
+                        status=VariantStatus.CANCELLED,
+                        progress=0.0,
+                        error_message=cancel_reason[:2000],
+                    )
+                )
+            elif job.type == JobType.VOICE_SYNTHESIS:
                 from cms.models.voice_announcement import VoiceAnnouncement
 
                 await db.execute(

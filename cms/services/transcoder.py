@@ -1171,6 +1171,162 @@ async def reconcile_transcode_failure_notifications_once(db) -> int:
     return created
 
 
+async def reconcile_stranded_variants_once(db, limit: int = 100) -> int:
+    """Repair variants left non-terminal by a job that has finished.
+
+    Variant status and job status are written by different processes, so
+    they drift. Known producers of drift, all confirmed in the code:
+
+    * the pre-transcode cancel path used to mark only the job (fixed at
+      source in ``worker/__main__.py``, but rows stranded before that fix
+      have terminal jobs and nothing else will ever revisit them);
+    * poison/retry-exhaustion, where the mirroring helper no-opped on
+      transcode jobs;
+    * crash / lease-loss / SIGTERM-persistence-failure paths.
+
+    Deliberately narrow, because the cheap version of this is unsafe:
+
+    * **Only live rows.** Soft-deleted assets belong to
+      :func:`reap_deleted_assets_once`, which gates on job status and
+      hard-deletes regardless of variant status.
+    * **"No active job", not "a terminal job exists".** A variant can have
+      several jobs -- ``enqueue_variants`` always inserts a new row, and
+      the stale-PROCESSING monitor re-enqueues by creating another one
+      without terminating the old. An old FAILED job sitting alongside a
+      live one must not terminalise the variant.
+    * **The newest job decides.** Older terminal jobs are history.
+    * **FAILED only when genuinely poison.** ``claim_job`` flips a job to
+      FAILED only once ``retry_count`` exceeds the limit; a FAILED row
+      under the limit can still be redelivered and reopened, so we leave
+      it alone.
+    * **DONE is never repaired to READY.** READY asserts a valid blob plus
+      complete metadata (size, checksum, dimensions); a job reporting
+      success is not evidence of either, and a bogus READY variant would
+      be served to devices. Normal ordering commits the variant READY
+      *before* the job is marked DONE, so this combination is corruption.
+      It is counted and logged loudly instead.
+
+    Updates are conditional on the variant still being non-terminal, so a
+    worker writing concurrently wins rather than being clobbered. The
+    reaper's advisory lock only serialises CMS replicas -- workers do not
+    take it -- so correctness has to come from the predicate, not the lock.
+
+    Returns the number of variants repaired (the DONE mismatches are
+    reported, not repaired, and are not counted here).
+    """
+    from shared.models.asset import AssetVariant as _AssetVariant
+    from cms.models.asset import VariantStatus as _VariantStatus
+    from shared.models.job import Job, JobType, JobStatus, MAX_JOB_RETRIES
+    from shared.metrics import (
+        variant_reconcile_total,
+        ATTR_REASON,
+        REASON_RECONCILE_CANCELLED,
+        REASON_RECONCILE_POISON_FAILED,
+        REASON_RECONCILE_DONE_MISMATCH,
+    )
+    from sqlalchemy import update as _sa_update
+
+    non_terminal = [_VariantStatus.PENDING, _VariantStatus.PROCESSING]
+
+    active_job_exists = (
+        select(Job.id).where(
+            Job.type == JobType.VARIANT_TRANSCODE,
+            Job.target_id == _AssetVariant.id,
+            Job.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
+        )
+    ).exists()
+
+    candidates = (await db.execute(
+        select(_AssetVariant)
+        .join(Asset, Asset.id == _AssetVariant.source_asset_id)
+        .where(
+            _AssetVariant.deleted_at.is_(None),
+            _AssetVariant.status.in_(non_terminal),
+            Asset.deleted_at.is_(None),
+            ~active_job_exists,
+        )
+        .order_by(_AssetVariant.created_at)
+        .limit(limit)
+    )).scalars().all()
+
+    if not candidates:
+        return 0
+
+    repaired = 0
+    for v in candidates:
+        newest = (await db.execute(
+            select(Job)
+            .where(
+                Job.type == JobType.VARIANT_TRANSCODE,
+                Job.target_id == v.id,
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+
+        # No job at all: the variant was created but not yet enqueued (the
+        # profiles router commits variants before enqueueing). Leave it.
+        if newest is None:
+            continue
+
+        if newest.status == JobStatus.CANCELLED:
+            new_status = _VariantStatus.CANCELLED
+            reason = REASON_RECONCILE_CANCELLED
+            message = newest.error_message or "cancelled"
+        elif (newest.status == JobStatus.FAILED
+                and newest.retry_count > MAX_JOB_RETRIES):
+            new_status = _VariantStatus.FAILED
+            reason = REASON_RECONCILE_POISON_FAILED
+            message = newest.error_message or "job exceeded retry limit"
+        elif newest.status == JobStatus.DONE:
+            # Reported, never repaired -- see the docstring.
+            logger.error(
+                "Reaper: variant %s is %s but its newest job %s is DONE "
+                "(asset=%s profile=%s). NOT synthesising READY -- a "
+                "successful dispatch is not evidence of a valid blob or "
+                "complete metadata. Investigate.",
+                v.id, v.status.value, newest.id, v.source_asset_id,
+                v.profile_id,
+            )
+            variant_reconcile_total.add(
+                1, {ATTR_REASON: REASON_RECONCILE_DONE_MISMATCH}
+            )
+            continue
+        else:
+            # FAILED under the retry limit, or some non-terminal state that
+            # raced our candidate query. Redelivery still owns it.
+            continue
+
+        result = await db.execute(
+            _sa_update(_AssetVariant)
+            .where(
+                _AssetVariant.id == v.id,
+                _AssetVariant.status.in_(non_terminal),
+            )
+            .values(
+                status=new_status,
+                progress=0.0,
+                error_message=str(message)[:2000],
+            )
+        )
+        if not result.rowcount:
+            # A worker wrote a terminal status between our read and write.
+            continue
+
+        repaired += 1
+        variant_reconcile_total.add(1, {ATTR_REASON: reason})
+        logger.warning(
+            "Reaper: reconciled variant %s %s -> %s from job %s (%s). A "
+            "steady rate here means a write path is stranding variants "
+            "and should be fixed at source.",
+            v.id, v.status.value, new_status.value, newest.id, reason,
+        )
+
+    if repaired:
+        await db.commit()
+    return repaired
+
+
 async def deleted_asset_reaper_loop() -> None:
     """Background loop: hard-delete soft-deleted assets whose jobs are terminal.
 
@@ -1208,6 +1364,20 @@ async def deleted_asset_reaper_loop() -> None:
                         await reap_deleted_assets_once(db)
                     except Exception:
                         logger.exception("Reaper: asset sweep failed")
+                async for db in get_db():
+                    try:
+                        # Before the supersession sweeps: they can only act
+                        # on variants that are READY/FAILED/CANCELLED, so a
+                        # variant stranded non-terminal is invisible to them
+                        # until this runs first.
+                        fixed = await reconcile_stranded_variants_once(db)
+                        if fixed:
+                            logger.warning(
+                                "Reaper: reconciled %d variant(s) left "
+                                "non-terminal by a finished job", fixed,
+                            )
+                    except Exception:
+                        logger.exception("Reaper: variant reconciliation sweep failed")
                 async for db in get_db():
                     try:
                         marked = await supersede_ready_variants_once(db)

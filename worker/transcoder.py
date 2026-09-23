@@ -36,6 +36,76 @@ STREAM_MAX_RETRIES = int(os.environ.get("AGORA_STREAM_MAX_RETRIES", "3"))
 _NO_RETRY_ERRORS = {"Image conversion failed", "Invalid data found"}
 
 
+async def mark_variant_failed_on_exhaustion(session_factory, job) -> str:
+    """Mirror a poison-killed VARIANT_TRANSCODE job onto its variant row.
+
+    The imager equivalent (``worker.imager_handlers.
+    mark_target_failed_on_exhaustion``) returns ``"not_imager"`` for
+    transcode jobs, so a variant whose job exhausted MAX_JOB_RETRIES was
+    left sitting at PENDING/PROCESSING forever -- displayed to the user as
+    queued work that will in fact never run.
+
+    Called from the poison branch in ``worker/__main__.py`` after
+    ``claim_job`` has already flipped the job to FAILED.
+
+    Guarded the same two ways as the imager path:
+
+    * a newer job for the same variant owns the row -- don't clobber it
+      (the stale-PROCESSING monitor re-enqueues by creating a *new* job
+      rather than reusing the old row, so this is a real case, not a
+      theoretical one);
+    * the variant has already moved to a terminal state -- never downgrade
+      a READY row on a late poison kill.
+    """
+    from shared.models.job import Job, JobType
+
+    if job.type != JobType.VARIANT_TRANSCODE:
+        return "not_variant"
+
+    msg = (
+        f"job exceeded retry limit ({job.retry_count} attempts): "
+        f"{(job.error_message or 'unknown failure')[:200]}"
+    )
+
+    async with session_factory() as db:
+        latest_id = (await db.execute(
+            select(Job.id)
+            .where(Job.type == job.type, Job.target_id == job.target_id)
+            .order_by(Job.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if latest_id is not None and latest_id != job.id:
+            logger.info(
+                "Poison job %s for variant %s is stale -- newer job %s owns "
+                "the row; not flipping",
+                job.id, job.target_id, latest_id,
+            )
+            return "skipped_newer_job"
+
+        variant = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == job.target_id)
+        )).scalar_one_or_none()
+        if variant is None:
+            return "missing"
+        if variant.status not in (VariantStatus.PENDING, VariantStatus.PROCESSING):
+            logger.info(
+                "Variant %s status is %s (already terminal) -- not clobbering "
+                "on poison kill of job %s",
+                variant.id, variant.status.value, job.id,
+            )
+            return "skipped_status"
+
+        variant.status = VariantStatus.FAILED
+        variant.progress = 0.0
+        variant.error_message = msg[:2000]
+        await db.commit()
+        logger.error(
+            "Variant %s marked FAILED after job %s exhausted retries",
+            variant.id, job.id,
+        )
+        return "updated"
+
+
 def _should_retry(variant: AssetVariant, source: Asset) -> bool:
     """Return True if this variant failure is retryable.
 
