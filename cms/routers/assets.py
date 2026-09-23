@@ -258,10 +258,16 @@ async def _assets_status_payload(
     if only_ids is not None:
         asset_q = asset_q.where(Asset.id.in_(only_ids))
 
-    asset_count = (await db.execute(
-        select(sa_func.count(Asset.id)).where(Asset.id.in_(visible)) if visible is not None
-        else select(sa_func.count(Asset.id))
-    )).scalar() or 0
+    # Must mirror asset_q's deleted_at filter. Without it this counted
+    # soft-deleted assets, which broke the page's countChanged tripwire two
+    # ways: it never matched the rendered row count (so an extra reconcile
+    # fired on every page load), and deleting an asset did not move the
+    # number at all -- so the poller never noticed, and the deleted row sat
+    # on screen until a manual refresh.
+    count_q = select(sa_func.count(Asset.id)).where(Asset.deleted_at.is_(None))
+    if visible is not None:
+        count_q = count_q.where(Asset.id.in_(visible))
+    asset_count = (await db.execute(count_q)).scalar() or 0
 
     variant_ready = 0
     variant_processing = 0
