@@ -160,6 +160,12 @@
     const CHAR_LIMIT = {{ char_limit }};
     const EDIT_MODE = {{ edit_mode | tojson }};
     const ASSET_ID = {{ asset_id | tojson }};
+    // Mutable twins of the two constants above. A successful create adopts
+    // the asset it just made, so every later submit is an update. Without
+    // that the page stays in create mode forever and the button keeps
+    // POSTing -- see the submit handler for why that matters.
+    let editing = EDIT_MODE;
+    let currentAssetId = ASSET_ID;
     const INITIAL_VOICE_NAME = {{ voice_name | tojson }};
     const INITIAL_EMOTION = {{ emotion | tojson }};
     const INITIAL_RATE = {{ speech_rate | tojson }};
@@ -497,13 +503,13 @@
                     return;
                 }
                 progressEl.textContent = "";
-                setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
+                setBusy(saveBtn, editing ? "Saving…" : "Creating…", false);
                 setStatus(data.generation_error || "Voice synthesis failed.", true);
             } catch (err) {
                 clearInterval(statusPollTimer);
                 statusPollTimer = null;
                 progressEl.textContent = "";
-                setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
+                setBusy(saveBtn, editing ? "Saving…" : "Creating…", false);
                 setStatus(extractErrorMsg(err, "Failed to refresh generation status."), true);
             }
         }
@@ -571,13 +577,13 @@
         event.preventDefault();
         setStatus("", false);
         progressEl.textContent = "";
-        setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", true);
+        setBusy(saveBtn, editing ? "Saving…" : "Creating…", true);
 
         try {
-            const url = EDIT_MODE
-                ? "/api/voice-announcements/" + encodeURIComponent(ASSET_ID)
+            const url = editing
+                ? "/api/voice-announcements/" + encodeURIComponent(currentAssetId)
                 : "/api/voice-announcements";
-            const method = EDIT_MODE ? "PUT" : "POST";
+            const method = editing ? "PUT" : "POST";
             const resp = await fetch(url, {
                 method: method,
                 headers: { "Content-Type": "application/json" },
@@ -587,8 +593,19 @@
             if (!resp.ok) {
                 throw data;
             }
-            if (!EDIT_MODE && data.asset_id && titleEl) {
-                titleEl.textContent = displayNameInput.value.trim();
+            if (!editing && data.asset_id) {
+                // Adopt the asset that was just created, so any later submit
+                // updates it instead of making another one.
+                //
+                // This is not a rare path. Synthesis runs after the asset is
+                // persisted, so when it fails the page re-enables the button
+                // and the user does the obvious thing: fix the script and
+                // press it again. In create mode that POSTed a second time,
+                // leaving the failed asset behind as a 0-byte duplicate.
+                currentAssetId = data.asset_id;
+                editing = true;
+                saveBtn.dataset.originalText = "Save Changes";
+                if (titleEl) titleEl.textContent = displayNameInput.value.trim();
             }
             // The asset is persisted the moment this request succeeds --
             // synthesis is a separate worker job that runs whether or not
@@ -597,16 +614,16 @@
             // "Queued for synthesis" window falsely warns about losing
             // work that is already saved.
             clearDirty();
-            await pollGenerationStatus(data.asset_id || ASSET_ID);
+            await pollGenerationStatus(currentAssetId);
         } catch (err) {
             // The save didn't land, so the form is genuinely still dirty:
             // leave the guard armed and reset the redirect target so a
             // later plain save goes to the library.
             pendingRedirect = "/assets";
-            setStatus(extractErrorMsg(err, EDIT_MODE ? "Save failed." : "Create failed."), true);
+            setStatus(extractErrorMsg(err, editing ? "Save failed." : "Create failed."), true);
         } finally {
             if (!statusPollTimer) {
-                setBusy(saveBtn, EDIT_MODE ? "Saving…" : "Creating…", false);
+                setBusy(saveBtn, editing ? "Saving…" : "Creating…", false);
             }
         }
     });
