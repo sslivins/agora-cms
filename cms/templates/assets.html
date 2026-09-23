@@ -574,7 +574,7 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         } catch (e) { return null; }
     }
 
-    async function _insertAssetRow(id) {
+    async function _insertAssetRow(id, beforeId) {
         const tbody = document.querySelector('.card table tbody');
         if (!tbody) return;
         const frag = await _fetchAssetRowFragment(id);
@@ -582,8 +582,13 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         // Remove the "No assets uploaded yet" empty-state row if present
         const empty = tbody.querySelector('tr td.empty');
         if (empty && empty.parentElement) empty.parentElement.remove();
-        // Server renders newest-first (ORDER BY uploaded_at DESC); prepend.
-        tbody.insertBefore(frag, tbody.firstChild);
+        // Server renders newest-first (ORDER BY uploaded_at DESC), so a fresh
+        // upload belongs at the top. beforeId lets the reconciler place a row
+        // that sorts below rows we already hold.
+        const anchor = beforeId
+            ? tbody.querySelector(`tr.asset-row[data-asset-id="${beforeId}"]`)
+            : tbody.firstChild;
+        tbody.insertBefore(frag, anchor || null);
         // Mirror to the grid view so a fresh upload appears immediately
         // there too -- without this the grid only updates on page reload.
         const grid = document.getElementById('assets-grid');
@@ -601,7 +606,10 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
                     original_filename: '',
                     filename: '',
                 };
-            grid.insertBefore(window._renderGridCard(a), grid.firstChild);
+            const anchorCard = beforeId
+                ? grid.querySelector(`[data-grid-card="${beforeId}"]`)
+                : grid.firstChild;
+            grid.insertBefore(window._renderGridCard(a), anchorCard || null);
         }
     }
 
@@ -642,6 +650,45 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
     window._replaceAssetDetailRow = _replaceAssetDetailRow;
     window._fetchAssetRowFragment = _fetchAssetRowFragment;
     window.applyScopeChanges = applyScopeChanges;
+    window._applyMembership = _applyMembership;
+    window._removeVanishedRows = _removeVanishedRows;
+
+    function _removeAssetFromDom(id) {
+        const row = document.querySelector(`tr.asset-row[data-asset-id="${id}"]`);
+        const detail = document.querySelector(`tr.asset-detail[data-detail-for="${id}"]`);
+        const card = document.querySelector(`[data-grid-card="${id}"]`);
+        if (row) row.remove();
+        if (detail) detail.remove();
+        if (card) card.remove();
+    }
+
+    // Drop rows for ids we asked about that the server didn't return. Runs
+    // every tick off the scoped payload, so a delete disappears within one
+    // interval without any extra request.
+    function _removeVanishedRows(requestedIds, returnedAssets) {
+        const alive = new Set(returnedAssets.map(a => a.id));
+        for (const id of requestedIds) {
+            if (!alive.has(id)) _removeAssetFromDom(id);
+        }
+    }
+
+    // Reconcile the rendered rows against the server's full ordered id list.
+    //
+    // The bounded part matters: the library pages 50 rows at a time, so most
+    // ids the server lists are simply ones the user hasn't scrolled to. The
+    // reconciler only proposes ids inside the window already loaded, which is
+    // the difference between a couple of row fetches and several hundred.
+    async function _applyMembership(serverIds, pageSize) {
+        if (typeof window.computeAssetReconcile !== 'function') return;
+        const domIds = Array.from(
+            document.querySelectorAll('tr.asset-row[data-asset-id]')
+        ).map(r => r.dataset.assetId);
+        const plan = window.computeAssetReconcile(domIds, serverIds, pageSize || 50);
+        for (const id of plan.remove) _removeAssetFromDom(id);
+        for (const entry of plan.insert) {
+            await (window._insertAssetRow || _insertAssetRow)(entry.id, entry.beforeId);
+        }
+    }
 
     // Apply scope changes from API data without reloading the page
     function applyScopeChanges(assets) {
@@ -714,20 +761,20 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
     document.addEventListener("drop", (e) => e.preventDefault());
 
     // Poll for changes (variant status updates, new uploads)
+    //
+    // membership_hash starts null and the first tick treats that as
+    // "changed", so it reconciles instead of merely adopting a baseline.
+    // Adopting would lose any asset created between this render and that
+    // tick -- the exact failure the old count seed existed to avoid, and
+    // which reconciling by id now handles without needing a seed at all.
+    //
+    // The per-render asset_count and variant_* aggregates that used to live
+    // here are gone: count was a lossy membership proxy (an add and a delete
+    // in one interval cancel out, and deletes are soft so the count never
+    // moved anyway) and the variant totals were written but never read.
     let lastState = {
-        // Seeded from the render so an asset created between this render and
-        // the first poll tick is still detected. Seeding null instead makes
-        // the first tick adopt the new count as its baseline, and the row is
-        // never inserted.
-        //
-        // This compares a rendered row count against a whole-library count,
-        // so it only holds while everything fits on one page. Pagination
-        // needs membership reconciled by id, not by count.
-        asset_count: {{ assets | length }},
-        variant_ready: {{ assets | sum(attribute='variant_ready') }},
-        variant_processing: {{ assets | sum(attribute='variant_processing') }},
-        variant_failed: {{ assets | sum(attribute='variant_failed') }},
-        scope_hash: null
+        scope_hash: null,
+        membership_hash: null
     };
 
     function buildVariantBadge(a) {
@@ -1015,30 +1062,47 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
             if (gen !== _pollGeneration) return;
             const newState = {
                 asset_count: data.asset_count,
-                variant_ready: data.variant_ready,
-                variant_processing: data.variant_processing,
-                variant_failed: data.variant_failed,
-                scope_hash: data.scope_hash
+                scope_hash: data.scope_hash,
+                membership_hash: data.membership_hash
             };
-
             // Always update live fields in-place
             if (data.assets) updateLiveAssets(data.assets);
 
-            // Scope or count changed — update DOM inline (no reload).
-            // Membership changes need the full picture: the scoped payload
-            // only echoes ids we already have, so it can never tell us about
-            // an asset that just became visible. This is the rare path, so
-            // fall back to the unscoped call and keep today's exact
-            // semantics.
+            // Removals are exact and free: we asked about specific ids, so
+            // any id that didn't come back is deleted or no longer visible.
+            // No extra request, and no dependence on asset_count -- which
+            // never moved on delete anyway, since deletes are soft.
+            if (data.assets) (window._removeVanishedRows || _removeVanishedRows)(ids, data.assets);
+
+            // Insertions do need the server's view, because a payload scoped
+            // to ids we already hold can never mention an asset that just
+            // appeared. membership_hash tells us when that's worth asking
+            // about; it changes on any add/remove, including an add and a
+            // delete in the same tick, which left asset_count unmoved.
+            //
+            // The first tick has no baseline. Reconcile rather than just
+            // adopting the hash: anything created between page render and
+            // this tick would otherwise be invisible until a manual refresh.
             const scopeChanged = lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash;
-            const countChanged = newState.asset_count !== lastState.asset_count;
-            if (scopeChanged || countChanged) {
-                const full = await fetch("/api/assets/status");
+            const membershipChanged = lastState.membership_hash === null
+                || newState.membership_hash !== lastState.membership_hash;
+            if (scopeChanged || membershipChanged) {
+                const full = await fetch("/api/assets/status", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ ids: ids, include_ids: true })
+                });
                 if (gen !== _pollGeneration) return;
                 if (full.ok) {
                     const fullData = await full.json();
                     if (gen !== _pollGeneration) return;
-                    (window.applyScopeChanges || applyScopeChanges)(fullData.assets);
+                    if (membershipChanged && Array.isArray(fullData.all_ids)) {
+                        await (window._applyMembership || _applyMembership)(fullData.all_ids, 50);
+                        if (gen !== _pollGeneration) return;
+                    }
+                    if (scopeChanged && fullData.assets) {
+                        (window.applyScopeChanges || applyScopeChanges)(fullData.assets);
+                    }
                 }
             }
             lastState = newState;
@@ -2332,9 +2396,31 @@ function fallbackCopy(text, onSuccess) {
     // rather than blindly inserting a row that might not match.
     const _origInsert = window._insertAssetRow;
     if (typeof _origInsert === 'function') {
-        window._insertAssetRow = async function(id) {
-            if (!state.anyFilterActive) return _origInsert(id);
+        window._insertAssetRow = async function(id, beforeId) {
+            if (!state.anyFilterActive) return _origInsert(id, beforeId);
             await reload();
+        };
+    }
+    // Membership reconciliation assumes the DOM holds a prefix of the
+    // server's default newest-first ordering. Under a filter or a custom
+    // sort that assumption is false, so skip rather than shuffle the view
+    // out from under the user.
+    const _origMembership = window._applyMembership;
+    if (typeof _origMembership === 'function') {
+        window._applyMembership = async function(serverIds, pageSize) {
+            if (state.anyFilterActive) return;
+            if (state.order !== '-uploaded_at') return;
+            return _origMembership(serverIds, pageSize);
+        };
+    }
+    // Removal is safe under a custom sort (it only drops rows the server
+    // no longer lists) but not under a filter, where the poller's id list
+    // and the filtered view disagree about what should be on screen.
+    const _origVanished = window._removeVanishedRows;
+    if (typeof _origVanished === 'function') {
+        window._removeVanishedRows = function(requestedIds, returnedAssets) {
+            if (state.anyFilterActive) return;
+            return _origVanished(requestedIds, returnedAssets);
         };
     }
 })();

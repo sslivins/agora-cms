@@ -232,6 +232,7 @@ async def _assets_status_payload(
     user: User,
     db: AsyncSession,
     only_ids: list[uuid.UUID] | None = None,
+    include_ids: bool = False,
 ):
     """Build the assets-page polling payload.
 
@@ -246,8 +247,6 @@ async def _assets_status_payload(
     regardless, so the poller still notices assets appearing or being
     re-scoped outside the loaded window. Both are their own cheap queries.
     """
-    from sqlalchemy import func as sa_func
-
     visible = await _visible_asset_ids(user, db)
     user_group_ids = await get_user_group_ids(user, db)
 
@@ -258,16 +257,19 @@ async def _assets_status_payload(
     if only_ids is not None:
         asset_q = asset_q.where(Asset.id.in_(only_ids))
 
-    # Must mirror asset_q's deleted_at filter. Without it this counted
-    # soft-deleted assets, which broke the page's countChanged tripwire two
-    # ways: it never matched the rendered row count (so an extra reconcile
-    # fired on every page load), and deleting an asset did not move the
-    # number at all -- so the poller never noticed, and the deleted row sat
-    # on screen until a manual refresh.
-    count_q = select(sa_func.count(Asset.id)).where(Asset.deleted_at.is_(None))
+    # One ordered id query backs three things: the membership hash, the
+    # ordered id list, and asset_count. Deriving the count from the same rows
+    # it describes makes the drift that broke the poller's tripwire
+    # structurally impossible -- a separate COUNT query is exactly how
+    # asset_count came to include soft-deleted assets.
+    ids_q = select(Asset.id, Asset.uploaded_at).where(Asset.deleted_at.is_(None))
     if visible is not None:
-        count_q = count_q.where(Asset.id.in_(visible))
-    asset_count = (await db.execute(count_q)).scalar() or 0
+        ids_q = ids_q.where(Asset.id.in_(visible))
+    # Tie-break on id so equal uploaded_at values cannot reorder between
+    # ticks and look like a membership change.
+    ids_q = ids_q.order_by(Asset.uploaded_at.desc(), Asset.id.desc())
+    ordered_ids = [str(r[0]) for r in (await db.execute(ids_q)).all()]
+    asset_count = len(ordered_ids)
 
     variant_ready = 0
     variant_processing = 0
@@ -421,6 +423,17 @@ async def _assets_status_payload(
 
     return {
         "asset_count": asset_count,
+        # Cheap per-tick membership tripwire. Unlike asset_count this cannot
+        # miss an add and a delete landing in the same interval, which leaves
+        # the count identical while membership has changed twice.
+        "membership_hash": hashlib.md5(
+            ",".join(ordered_ids).encode()
+        ).hexdigest()[:12],
+        # Full ordered id list, only when asked for. The page requests it on
+        # a membership_hash change and diffs it against the DOM, which is
+        # what lets it bound row insertion to the window the user has
+        # actually scrolled into.
+        **({"all_ids": ordered_ids} if include_ids else {}),
         # Summed over the assets in ``assets`` below, so these narrow with
         # ``only_ids``. Both page consumers ignore them (assets.html stores
         # them in lastState but only ever compares asset_count and
@@ -451,6 +464,9 @@ class AssetsStatusQuery(BaseModel):
     """Ids the caller already has rendered and wants fresh state for."""
 
     ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    # Set when membership_hash changed and the page needs to diff the full
+    # ordered id list against its DOM.
+    include_ids: bool = False
 
 
 @router.post("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
@@ -465,7 +481,9 @@ async def assets_status_json_scoped(
     a POST because the library accumulates pages as you scroll and the id list
     outgrows a comfortable query string.
     """
-    return await _assets_status_payload(user, db, body.ids)
+    return await _assets_status_payload(
+        user, db, body.ids, include_ids=body.include_ids
+    )
 
 
 @router.get("", response_model=List[AssetOut])
