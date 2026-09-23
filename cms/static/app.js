@@ -28,9 +28,20 @@ function isModalOpen() {
     // just checking for `.modal-overlay` would return true even when no
     // modal is actually shown. Filter to overlays that are actually
     // visible.
+    //
+    // This deliberately does NOT use `offsetParent !== null`. Modal
+    // overlays are `position: fixed` (style.css), and a fixed element's
+    // offsetParent is always null -- so that test reported "no modal open"
+    // even with a modal on screen, and every caller's poll guard was dead.
+    // checkVisibility() accounts for display, visibility, and content-
+    // visibility without caring about positioning.
     const overlays = document.querySelectorAll(".modal-overlay");
     for (const o of overlays) {
-        if (o.offsetParent !== null) return true;
+        const visible = typeof o.checkVisibility === "function"
+            ? o.checkVisibility()
+            : (o.offsetWidth > 0 || o.offsetHeight > 0 ||
+               o.getClientRects().length > 0);
+        if (visible) return true;
     }
     return false;
 }

@@ -945,8 +945,67 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
     const _voiceRowsRefreshed = new Set();
     const _voiceRefreshInFlight = new Set();
 
+    // ── Per-asset interaction lock ──
+    //
+    // The poller used to pause globally whenever a modal was open. That
+    // guard never actually fired (isModalOpen tested offsetParent on a
+    // position:fixed overlay, which is always null), and pausing the whole
+    // library was the wrong shape anyway -- it stops every row updating
+    // because the user is busy with one of them.
+    //
+    // Instead, skip only the assets the user is currently interacting with.
+    // Everything else keeps refreshing live.
+    //
+    // Deletions are deliberately NOT gated on this: an asset that is gone
+    // from the server has to leave the DOM regardless of what has focus,
+    // otherwise we'd leave the user acting on something that no longer
+    // exists.
+    function _assetNodes(id) {
+        const sel = '[data-asset-id="' + id + '"], [data-detail-for="' + id + '"], ' +
+                    '[data-grid-card="' + id + '"]';
+        return Array.from(document.querySelectorAll(sel));
+    }
+
+    function _isAssetLocked(id) {
+        const nodes = _assetNodes(id);
+        if (!nodes.length) return false;
+
+        const active = document.activeElement;
+        const hasFocus = active && active !== document.body &&
+            nodes.some(n => n.contains(active));
+        if (hasFocus) return true;
+
+        for (const n of nodes) {
+            // An open kebab/menu popover or expanded disclosure anchored in
+            // this row: re-rendering pulls the menu out from under the click.
+            if (n.querySelector('[popover]:popover-open, [aria-expanded="true"]')) {
+                return true;
+            }
+            // Audio/video mid-playback -- swapping the element restarts it.
+            for (const m of n.querySelectorAll('audio, video')) {
+                if (!m.paused && !m.ended && m.currentTime > 0) return true;
+            }
+        }
+
+        // A modal that is showing this asset (edit dialog, detail view).
+        // Scoped to the asset rather than pausing everything, so unrelated
+        // rows keep updating behind the dialog.
+        for (const o of document.querySelectorAll('.modal-overlay')) {
+            const visible = typeof o.checkVisibility === 'function'
+                ? o.checkVisibility()
+                : (o.offsetWidth > 0 || o.offsetHeight > 0 ||
+                   o.getClientRects().length > 0);
+            if (visible && o.querySelector('[data-asset-id="' + id + '"]')) {
+                return true;
+            }
+        }
+        return false;
+    }
+    window._isAssetLocked = _isAssetLocked;
+
     function updateLiveAssets(assets) {
         for (const a of assets) {
+            if (_isAssetLocked(a.id)) continue;
             // Update main table variant badge
             const variantCell = document.querySelector('[data-live-variants="' + a.id + '"]');
             if (variantCell) variantCell.innerHTML = buildVariantBadge(a);
@@ -1006,6 +1065,7 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         // the row pair via the /row endpoint so Jinja can render the real
         // variants table (profile names, etc) without a full-page reload.
         for (const a of assets) {
+            if (_isAssetLocked(a.id)) continue;
             if (a.asset_type === 'saved_stream' && a.variant_total > 0) {
                 const detailRow = document.querySelector('tr.asset-detail[data-detail-for="' + a.id + '"]');
                 if (detailRow && !detailRow.querySelector('[data-live-variant-table="' + a.id + '"]')) {
@@ -1037,12 +1097,22 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
         }
     }
 
+    // Exported so the interaction-lock e2e tests can drive a poll tick
+    // with a synthetic payload instead of waiting on the 5s timer.
+    window.updateLiveAssets = updateLiveAssets;
+
     // Recursive setTimeout rather than setInterval: setInterval does not wait
     // for the previous async tick, so slow responses overlap and a stale one
     // can land after a fresh one and visually revert it.
     let _pollGeneration = 0;
     async function pollTick() {
-        if (isModalOpen()) return;
+        // No global modal pause here any more. It never worked (see
+        // isModalOpen in app.js -- it tested offsetParent on a fixed
+        // overlay), and freezing the entire library because one dialog is
+        // open is the wrong trade: the user opens a modal on one asset and
+        // every other row goes stale. updateLiveAssets skips individual
+        // assets the user is interacting with via _isAssetLocked instead,
+        // which covers asset-scoped modals too.
         const gen = ++_pollGeneration;
         try {
             // Only ask about rows we actually have. The table renders 50 at a
