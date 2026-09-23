@@ -96,6 +96,46 @@ class TestAssetStatusScoped:
         assert scoped["assets"][0] == from_unscoped
 
 
+    async def test_asset_count_excludes_soft_deleted(self, client, db_session):
+        """asset_count must not count soft-deleted assets.
+
+        It is the page's "did membership change" tripwire. Counting deleted
+        rows meant deleting an asset did not move the number, so the poller
+        never reconciled and the deleted row stayed on screen until the user
+        refreshed by hand.
+        """
+        from datetime import datetime, timezone
+
+        a, b = await self._two_assets(db_session)
+
+        before = (await client.get("/api/assets/status")).json()["asset_count"]
+        assert before == 2
+
+        b.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        after = (await client.get("/api/assets/status")).json()
+        assert after["asset_count"] == 1
+        assert [x["id"] for x in after["assets"]] == [str(a.id)]
+
+    async def test_asset_count_matches_detail_length_unscoped(
+        self, client, db_session
+    ):
+        """The two are counted by separate queries; they must not drift.
+
+        The drift is what made the tripwire fire on every page load.
+        """
+        from datetime import datetime, timezone
+
+        a, b = await self._two_assets(db_session)
+        b.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        data = (await client.get("/api/assets/status")).json()
+
+        assert data["asset_count"] == len(data["assets"])
+
+
 @pytest.mark.asyncio
 class TestAssetStatus:
     async def test_status_empty(self, client):

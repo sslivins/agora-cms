@@ -715,6 +715,14 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
 
     // Poll for changes (variant status updates, new uploads)
     let lastState = {
+        // Seeded from the render so an asset created between this render and
+        // the first poll tick is still detected. Seeding null instead makes
+        // the first tick adopt the new count as its baseline, and the row is
+        // never inserted.
+        //
+        // This compares a rendered row count against a whole-library count,
+        // so it only holds while everything fits on one page. Pagination
+        // needs membership reconciled by id, not by count.
         asset_count: {{ assets | length }},
         variant_ready: {{ assets | sum(attribute='variant_ready') }},
         variant_processing: {{ assets | sum(attribute='variant_processing') }},
