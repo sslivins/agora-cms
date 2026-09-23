@@ -890,19 +890,28 @@ async def profiles_status_json(
     """
     from cms.routers.assets import _visible_asset_ids
 
-    # Profile variant summaries
+    # Profile variant summaries.
+    #
+    # Joined to Asset so variants belonging to soft-deleted assets don't
+    # count. Without that the totals include work that will never be done
+    # and the denominator never reaches ready.
     result = await db.execute(
         select(DeviceProfile).order_by(DeviceProfile.name)
     )
     profiles_out = []
     for p in result.scalars().all():
         total_var = (await db.execute(
-            select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == p.id)
+            select(func.count(AssetVariant.id))
+            .join(Asset, Asset.id == AssetVariant.source_asset_id)
+            .where(AssetVariant.profile_id == p.id, Asset.deleted_at.is_(None))
         )).scalar() or 0
         ready_var = (await db.execute(
-            select(func.count(AssetVariant.id)).where(
+            select(func.count(AssetVariant.id))
+            .join(Asset, Asset.id == AssetVariant.source_asset_id)
+            .where(
                 AssetVariant.profile_id == p.id,
                 AssetVariant.status == VariantStatus.READY,
+                Asset.deleted_at.is_(None),
             )
         )).scalar() or 0
         profiles_out.append({
@@ -912,11 +921,24 @@ async def profiles_status_json(
             "matches_defaults": _matches_defaults(p),
         })
 
-    # Transcode queue (pending / processing / failed) — scoped to visible assets
+    # Transcode queue (pending / processing / failed) — scoped to visible assets.
+    #
+    # Deleting an asset is a soft delete, and the worker only marks its jobs
+    # terminal once it picks the message up. Until then the variant rows
+    # survive, so without the deleted_at filter the Transcoding Queue card
+    # keeps listing work for assets the user has already deleted and cannot
+    # see anywhere else. Admins saw this most: _visible_asset_ids returns
+    # None for them, so nothing else narrowed the query.
     visible = await _visible_asset_ids(user, db)
     queue_q = (
         select(AssetVariant)
-        .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
+        .join(Asset, Asset.id == AssetVariant.source_asset_id)
+        .where(
+            AssetVariant.status.in_(
+                [VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]
+            ),
+            Asset.deleted_at.is_(None),
+        )
         .order_by(AssetVariant.created_at)
         .limit(50)
     )
