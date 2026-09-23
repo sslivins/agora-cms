@@ -1,0 +1,291 @@
+"""Stale-transcode recovery must key off liveness, not elapsed time.
+
+The original implementation decided a PROCESSING variant was stale by
+measuring ``AssetVariant.created_at`` against a fixed timeout. That is a
+*duration budget*, not a liveness check, so a transcode that was simply slow
+was declared dead and re-enqueued on every 30s tick. Observed in production
+(CMS 1.38.297): one 72-minute 1080p transcode accumulated three extra
+workers, all writing the same output blob concurrently, while the queue card
+reported PENDING for a variant that was actively transcoding.
+
+The fix moves the signal to ``Job.heartbeat_at``, stamped every 15s by the
+worker in the DB round-trip it already makes to probe ``cancel_requested``.
+
+Most of the tests below pin *refusals* rather than repairs, because the
+dangerous direction is over-eager recovery: a false positive duplicates
+work and corrupts output, whereas a false negative merely delays it. The
+refusal tests are individually mutation-checked — see
+``test_mutation_guard_is_not_vacuous``.
+"""
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import select
+
+from cms.services import transcoder as _tx
+from cms.services.transcoder import recover_stalled_variants_once
+from shared.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+from shared.models.device_profile import DeviceProfile
+from shared.models.job import Job, JobStatus, JobType
+
+pytestmark = pytest.mark.asyncio
+
+
+def _ago(seconds: float) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+
+
+async def _profile(db):
+    p = (await db.execute(select(DeviceProfile).limit(1))).scalar_one_or_none()
+    if p is None:
+        p = DeviceProfile(name=f"hb-{uuid.uuid4().hex[:6]}")
+        db.add(p)
+        await db.flush()
+    return p
+
+
+async def _variant(
+    db,
+    *,
+    status=VariantStatus.PROCESSING,
+    progress=0.0,
+    created_at=None,
+    deleted=False,
+):
+    name = f"hb-{uuid.uuid4().hex[:8]}.mp4"
+    asset = Asset(
+        filename=name, asset_type=AssetType.VIDEO, size_bytes=1, checksum=name
+    )
+    db.add(asset)
+    await db.flush()
+
+    variant = AssetVariant(
+        source_asset_id=asset.id,
+        profile_id=(await _profile(db)).id,
+        filename=f"v-{name}",
+        status=status,
+        progress=progress,
+    )
+    if created_at is not None:
+        variant.created_at = created_at
+    if deleted:
+        variant.deleted_at = datetime.now(timezone.utc)
+    db.add(variant)
+    await db.flush()
+    return variant
+
+
+async def _job(
+    db,
+    variant,
+    *,
+    status=JobStatus.PROCESSING,
+    heartbeat_at=None,
+    created_at=None,
+):
+    job = Job(
+        type=JobType.VARIANT_TRANSCODE,
+        target_id=variant.id,
+        status=status,
+        heartbeat_at=heartbeat_at,
+    )
+    if created_at is not None:
+        job.created_at = created_at
+    db.add(job)
+    await db.flush()
+    return job
+
+
+async def _active_jobs(db, variant) -> list[Job]:
+    rows = await db.execute(
+        select(Job).where(
+            Job.target_id == variant.id,
+            Job.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
+        )
+    )
+    return list(rows.scalars().all())
+
+
+class TestRefusals:
+    """The bug was over-eager recovery. These pin that it stays refused."""
+
+    async def test_slow_but_heartbeating_transcode_is_not_recovered(self, db_session):
+        """THE regression test.
+
+        A 3-hour-old transcode that is still heartbeating is healthy. The old
+        code reset this unconditionally once age exceeded 2x the timeout,
+        which is exactly how one variant acquired three concurrent workers.
+        """
+        variant = await _variant(db_session, created_at=_ago(3 * 3600))
+        job = await _job(
+            db_session, variant,
+            created_at=_ago(3 * 3600),
+            heartbeat_at=_ago(5),
+        )
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == []
+
+        await db_session.refresh(variant)
+        await db_session.refresh(job)
+        assert variant.status == VariantStatus.PROCESSING
+        assert job.status == JobStatus.PROCESSING
+        # and crucially: no duplicate job was manufactured
+        assert len(await _active_jobs(db_session, variant)) == 1
+
+    async def test_zero_progress_with_a_live_heartbeat_is_not_recovered(
+        self, db_session
+    ):
+        """progress==0.0 is normal for a long analysis phase, and is never
+        written at all for inputs ffprobe can't measure. The old code's first
+        branch treated it as evidence of death."""
+        variant = await _variant(
+            db_session, progress=0.0, created_at=_ago(3 * 3600)
+        )
+        await _job(
+            db_session, variant, created_at=_ago(3 * 3600), heartbeat_at=_ago(5)
+        )
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == []
+
+    async def test_progress_clamped_at_99_with_live_heartbeat_is_not_recovered(
+        self, db_session
+    ):
+        """The worker stops writing progress once the estimate clamps at 99%.
+        A long tail after that point must not read as death."""
+        variant = await _variant(
+            db_session, progress=99.0, created_at=_ago(3 * 3600)
+        )
+        await _job(
+            db_session, variant, created_at=_ago(3 * 3600), heartbeat_at=_ago(5)
+        )
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == []
+
+    async def test_null_heartbeat_falls_back_to_created_at(self, db_session):
+        """Jobs claimed before the column existed must not all be reaped on
+        the first tick after deploy."""
+        variant = await _variant(db_session, created_at=_ago(10))
+        await _job(db_session, variant, created_at=_ago(10), heartbeat_at=None)
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == []
+
+    async def test_variant_with_no_active_job_is_left_alone(self, db_session):
+        """That shape belongs to reconcile_stranded_variants_once. Two
+        components repairing it would race."""
+        variant = await _variant(db_session, created_at=_ago(3 * 3600))
+        await _job(
+            db_session, variant,
+            status=JobStatus.DONE,
+            created_at=_ago(3 * 3600),
+            heartbeat_at=_ago(3 * 3600),
+        )
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == []
+
+        await db_session.refresh(variant)
+        assert variant.status == VariantStatus.PROCESSING
+
+    async def test_soft_deleted_variant_is_skipped(self, db_session):
+        variant = await _variant(
+            db_session, created_at=_ago(3 * 3600), deleted=True
+        )
+        await _job(
+            db_session, variant,
+            created_at=_ago(3 * 3600),
+            heartbeat_at=_ago(3 * 3600),
+        )
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == []
+
+
+class TestRecovery:
+    async def test_dead_worker_is_recovered(self, db_session):
+        variant = await _variant(db_session, progress=42.0)
+        job = await _job(db_session, variant, heartbeat_at=_ago(3600))
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == [variant.id]
+
+        await db_session.refresh(variant)
+        await db_session.refresh(job)
+        assert variant.status == VariantStatus.PENDING
+        assert variant.progress == 0.0
+        assert job.status == JobStatus.FAILED
+        assert "heartbeat" in job.error_message
+
+    async def test_replacement_job_is_created(self, db_session):
+        variant = await _variant(db_session)
+        dead = await _job(db_session, variant, heartbeat_at=_ago(3600))
+        await db_session.commit()
+
+        await recover_stalled_variants_once(db_session)
+
+        active = await _active_jobs(db_session, variant)
+        assert len(active) == 1
+        assert active[0].id != dead.id
+        assert active[0].status == JobStatus.PENDING
+
+    async def test_recovery_does_not_cancel_the_old_job(self, db_session):
+        """CANCELLED would be terminalised unconditionally by the stranded
+        reconciler; FAILED under the retry limit is inert to it."""
+        variant = await _variant(db_session)
+        job = await _job(db_session, variant, heartbeat_at=_ago(3600))
+        await db_session.commit()
+
+        await recover_stalled_variants_once(db_session)
+
+        await db_session.refresh(job)
+        assert job.status == JobStatus.FAILED
+        assert job.status != JobStatus.CANCELLED
+        assert job.retry_count == 0
+
+    async def test_null_heartbeat_with_old_created_at_is_recovered(self, db_session):
+        variant = await _variant(db_session, created_at=_ago(3 * 3600))
+        await _job(
+            db_session, variant, created_at=_ago(3 * 3600), heartbeat_at=None
+        )
+        await db_session.commit()
+
+        assert await recover_stalled_variants_once(db_session) == [variant.id]
+
+    async def test_batch_is_bounded(self, db_session, monkeypatch):
+        monkeypatch.setattr(_tx, "_STALE_RESET_BATCH", 2)
+        for _ in range(4):
+            v = await _variant(db_session)
+            await _job(db_session, v, heartbeat_at=_ago(3600))
+        await db_session.commit()
+
+        assert len(await recover_stalled_variants_once(db_session)) == 2
+
+
+class TestMutationGuards:
+    async def test_mutation_guard_is_not_vacuous(self, db_session, monkeypatch):
+        """Prove the refusal tests can actually fail.
+
+        PR #921 shipped a refusal assertion that passed for the wrong reason,
+        so a refusal test is not trusted here until it has been shown to go
+        red when the guard is removed. Collapsing the threshold to 0 makes
+        every job look stale; the healthy-transcode fixture must then be
+        recovered. If this test passes while the refusal tests also pass,
+        those refusals are meaningful.
+        """
+        variant = await _variant(db_session, created_at=_ago(3 * 3600))
+        await _job(
+            db_session, variant, created_at=_ago(3 * 3600), heartbeat_at=_ago(5)
+        )
+        await db_session.commit()
+
+        # Unmutated: refused.
+        assert await recover_stalled_variants_once(db_session) == []
+
+        # Mutated: the same row is now recovered, so the refusal above was
+        # decided by the heartbeat threshold and nothing else.
+        monkeypatch.setattr(_tx, "_STALE_HEARTBEAT_TIMEOUT", 0)
+        assert await recover_stalled_variants_once(db_session) == [variant.id]

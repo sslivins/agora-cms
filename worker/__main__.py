@@ -373,15 +373,24 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                     current_popreceipt = new_pr
                 logger.debug("Heartbeat refreshed lease for job %s", job_id)
 
-                # ── Cooperative cancellation probe ──
-                # Check if CMS (via DELETE endpoint) has flagged this job.
-                # If so, SIGTERM the active ffmpeg so _transcode_one exits.
+                # ── Liveness stamp + cooperative cancellation probe ──
+                # One round-trip does both: refresh heartbeat_at (so the
+                # CMS staleness monitor can tell "slow" from "dead") and
+                # read back whether CMS has flagged this job for cancel.
+                # This replaced a bare SELECT, so it adds no extra load.
                 try:
+                    from sqlalchemy import func as _sa_func
+                    from sqlalchemy import update as _sa_update
+
                     async with session_factory() as _db:
                         row = await _db.execute(
-                            select(Job.cancel_requested).where(Job.id == job_id)
+                            _sa_update(Job)
+                            .where(Job.id == job_id)
+                            .values(heartbeat_at=_sa_func.now())
+                            .returning(Job.cancel_requested)
                         )
                         flag = row.scalar_one_or_none()
+                        await _db.commit()
                         if flag:
                             cancel_observed = True
                             logger.info(
@@ -395,7 +404,12 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                             lease_lost.set()
                             return
                 except Exception:
-                    logger.debug("Cancel probe failed (ignoring)", exc_info=True)
+                    # A failed stamp/probe is tolerated: the staleness
+                    # threshold spans several heartbeat cycles, so a
+                    # transient DB blip won't get a live job reaped.
+                    logger.debug(
+                        "Heartbeat stamp / cancel probe failed (ignoring)", exc_info=True
+                    )
 
                 # Sleep AFTER renewing.  If lease_lost was signalled during
                 # sleep we return promptly.
@@ -428,7 +442,21 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     hb_task = asyncio.create_task(_heartbeat())
 
     async def _stop_heartbeat():
+        # Ask the loop to exit first and give it a moment to do so.  It waits
+        # on ``lease_lost`` between cycles, so the graceful path is normally
+        # immediate.  This matters because the heartbeat now *writes*
+        # (stamping Job.heartbeat_at): cancelling it mid-transaction can
+        # leave the write unfinished and the row lock held, which then
+        # blocks the finalize path that runs straight after this call.
         lease_lost.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(hb_task), timeout=5)
+            return
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+        except Exception:
+            return
+        # Graceful stop didn't happen in time — fall back to cancelling.
         hb_task.cancel()
         try:
             await hb_task
@@ -711,9 +739,19 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 )
             )
             if job.type == JobType.VARIANT_TRANSCODE:
+                # Guarded on the variant still being non-terminal, matching
+                # the pre-transcode cancel branch above.  Without this, a
+                # cancel observed late in our run can clobber a row that
+                # another worker has already driven to READY — reachable
+                # whenever two jobs exist for one variant.
                 await db.execute(
                     _sa_update(AssetVariant)
-                    .where(AssetVariant.id == job.target_id)
+                    .where(
+                        AssetVariant.id == job.target_id,
+                        AssetVariant.status.in_(
+                            [VariantStatus.PENDING, VariantStatus.PROCESSING]
+                        ),
+                    )
                     .values(
                         status=VariantStatus.CANCELLED,
                         progress=0.0,

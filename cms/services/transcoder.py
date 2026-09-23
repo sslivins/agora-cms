@@ -57,7 +57,17 @@ THUMBNAIL_ONLY_ASSET_TYPES: tuple[AssetType, ...] = (
 
 # ── Monitor loop intervals ──────────────────────────────────────
 _MONITOR_INTERVAL = int(os.environ.get("AGORA_MONITOR_INTERVAL", "30"))
-_STALE_PROCESSING_TIMEOUT = int(os.environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
+# How long a PROCESSING job may go without a heartbeat before the monitor
+# treats its worker as dead.  The worker stamps ``Job.heartbeat_at`` every
+# HEARTBEAT_INTERVAL (15s), so this is several cycles of slack — enough to
+# ride out a transient DB blip without reaping a live job.
+#
+# This is a *liveness* timeout, not a duration budget.  A transcode may run
+# for hours and stay healthy so long as it keeps heartbeating.
+_STALE_HEARTBEAT_TIMEOUT = int(os.environ.get("AGORA_STALE_HEARTBEAT_TIMEOUT", "120"))
+# Cap on how many stale variants one tick will recover, so a mass worker
+# outage can't turn a single tick into an unbounded rewrite.
+_STALE_RESET_BATCH = int(os.environ.get("AGORA_STALE_RESET_BATCH", "50"))
 # Outbox drainer interval — kept short so producer-to-queue latency stays
 # sub-second-ish.  In Postgres mode we additionally LISTEN on the
 # ``transcode_outbox`` channel for instant wake-up; this poll is the
@@ -636,6 +646,92 @@ async def _enqueue_transcoding_for_asset(
     return new_variant_ids
 
 
+async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
+    """Re-enqueue variants whose worker has stopped heartbeating.
+
+    This is a **liveness** check, not a duration budget.  The previous
+    implementation measured age from ``AssetVariant.created_at`` — total
+    elapsed wall-clock time — so any transcode legitimately slower than the
+    timeout was declared stale and re-enqueued on every tick.  In production
+    a single 72-minute 1080p transcode spawned three duplicate workers, all
+    writing the same output blob concurrently.
+
+    The signal is ``Job.heartbeat_at``, stamped by the worker every 15s.
+    ``AssetVariant.progress`` is deliberately *not* used: it is only written
+    when ffmpeg reports a duration (never for livestreams or un-probeable
+    inputs), it stops entirely once the estimate clamps at 99%, and the
+    image / thumbnail / webpage branches jump 0 → 100 with nothing in
+    between.  Keying off progress would recreate the identical
+    duplicate-worker bug for a different class of input.
+
+    Variants with *no* active job are deliberately out of scope — that is
+    :func:`reconcile_stranded_variants_once`'s responsibility.  This pass is
+    only a backstop for a job that is still active while the worker holding
+    it has died without marking it.
+
+    Returns the ids of the variants that were recovered.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    from shared.models.job import Job, JobStatus
+
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=_STALE_HEARTBEAT_TIMEOUT
+    )
+    result = await db.execute(
+        select(Job, AssetVariant)
+        .join(AssetVariant, AssetVariant.id == Job.target_id)
+        .where(
+            Job.type == JobType.VARIANT_TRANSCODE,
+            Job.status == JobStatus.PROCESSING,
+            AssetVariant.status == VariantStatus.PROCESSING,
+            AssetVariant.deleted_at.is_(None),
+            # COALESCE covers jobs claimed before this column existed, so a
+            # deploy landing mid-transcode doesn't reap every in-flight job
+            # on the first tick.
+            func.coalesce(Job.heartbeat_at, Job.created_at) < cutoff,
+        )
+        .order_by(Job.created_at)
+        .limit(_STALE_RESET_BATCH)
+    )
+    rows = result.all()
+    if not rows:
+        return []
+
+    variant_ids = [v.id for _job, v in rows]
+
+    # Ordering is load-bearing.  ``enqueue_jobs`` commits in its own
+    # transaction, so creating the replacement *after* terminalising the old
+    # job would leave a window in which the variant is non-terminal with no
+    # active job — exactly the stranded-variant reconciler's candidate
+    # shape.  That reconciler runs every 15s under a *different* advisory
+    # lock in a different replica, so the window is genuinely reachable.
+    # Enqueue first: an active job then exists at every instant.
+    await enqueue_variants(db, variant_ids)
+
+    for job, variant in rows:
+        # FAILED, not CANCELLED: the reconciler terminalises a variant whose
+        # newest job is CANCELLED unconditionally, but only acts on FAILED
+        # once retries are exhausted.  retry_count is left untouched, so
+        # this stays inert to it.
+        job.status = JobStatus.FAILED
+        job.error_message = (
+            f"no heartbeat for >{_STALE_HEARTBEAT_TIMEOUT}s — worker presumed dead"
+        )
+        job.completed_at = datetime.now(timezone.utc)
+        variant.status = VariantStatus.PENDING
+        variant.progress = 0.0
+
+    await db.commit()
+
+    logger.warning(
+        "Recovered %d variant(s) whose worker stopped heartbeating for >%ds: %s",
+        len(rows), _STALE_HEARTBEAT_TIMEOUT,
+        ", ".join(str(vid) for vid in variant_ids),
+    )
+    return variant_ids
+
+
 async def stream_capture_monitor_loop() -> None:
     """Background loop: reconcile captures and reset stale work.
 
@@ -661,8 +757,8 @@ async def stream_capture_monitor_loop() -> None:
 
     logger.info(
         "Stream capture monitor started "
-        "(interval=%ds, stale_timeout=%ds)",
-        _MONITOR_INTERVAL, _STALE_PROCESSING_TIMEOUT,
+        "(interval=%ds, stale_heartbeat_timeout=%ds)",
+        _MONITOR_INTERVAL, _STALE_HEARTBEAT_TIMEOUT,
     )
 
     while True:
@@ -703,34 +799,9 @@ async def stream_capture_monitor_loop() -> None:
                                 asset.id, len(variant_ids),
                             )
 
-                # ── 2. Stale PROCESSING variants → reset to PENDING ──
+                # ── 2. PROCESSING variants whose worker stopped heartbeating ──
                 async for db in get_db():
-                    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_STALE_PROCESSING_TIMEOUT)
-                    result = await db.execute(
-                        select(AssetVariant).where(
-                            AssetVariant.status == VariantStatus.PROCESSING,
-                        )
-                    )
-                    processing = result.scalars().all()
-
-                    reset_ids: list[uuid.UUID] = []
-                    for v in processing:
-                        age = (datetime.now(timezone.utc) - v.created_at).total_seconds()
-                        if v.progress == 0.0 and age > _STALE_PROCESSING_TIMEOUT:
-                            v.status = VariantStatus.PENDING
-                            v.progress = 0.0
-                            reset_ids.append(v.id)
-                        elif age > _STALE_PROCESSING_TIMEOUT * 2:
-                            v.status = VariantStatus.PENDING
-                            v.progress = 0.0
-                            reset_ids.append(v.id)
-
-                    if reset_ids:
-                        await db.commit()
-                        await enqueue_variants(db, reset_ids)
-                        logger.warning(
-                            "Reset %d stale PROCESSING variant(s) to PENDING", len(reset_ids),
-                        )
+                    await recover_stalled_variants_once(db)
 
         except asyncio.CancelledError:
             logger.info("Stream capture monitor shutting down")
