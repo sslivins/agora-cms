@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -227,12 +228,24 @@ async def _verify_asset_access(asset_id: uuid.UUID, request, db: AsyncSession) -
         raise HTTPException(status_code=403, detail="Not authorised for this asset")
 
 
-@router.get("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
-async def assets_status_json(
-    user: User = Depends(require_permission(ASSETS_READ)),
-    db: AsyncSession = Depends(get_db),
+async def _assets_status_payload(
+    user: User,
+    db: AsyncSession,
+    only_ids: list[uuid.UUID] | None = None,
 ):
-    """Lightweight JSON for assets page polling — filtered by user's group access."""
+    """Build the assets-page polling payload.
+
+    ``only_ids`` restricts the per-asset ``assets`` detail list to those ids.
+    The library page passes the ids actually present in the DOM: it renders 50
+    rows per page, but this endpoint otherwise loads *every* visible asset —
+    with variants, group links and voice rows eagerly loaded, plus slide
+    counts and thumbnail URLs for all of them — on a 5 second timer. That cost
+    is unbounded in the asset count and is paid per open tab.
+
+    The page-level ``asset_count`` and ``scope_hash`` tripwires stay global
+    regardless, so the poller still notices assets appearing or being
+    re-scoped outside the loaded window. Both are their own cheap queries.
+    """
     from sqlalchemy import func as sa_func
 
     visible = await _visible_asset_ids(user, db)
@@ -242,6 +255,8 @@ async def assets_status_json(
     asset_q = select(Asset).where(Asset.deleted_at.is_(None))
     if visible is not None:
         asset_q = asset_q.where(Asset.id.in_(visible))
+    if only_ids is not None:
+        asset_q = asset_q.where(Asset.id.in_(only_ids))
 
     asset_count = (await db.execute(
         select(sa_func.count(Asset.id)).where(Asset.id.in_(visible)) if visible is not None
@@ -400,12 +415,51 @@ async def assets_status_json(
 
     return {
         "asset_count": asset_count,
+        # Summed over the assets in ``assets`` below, so these narrow with
+        # ``only_ids``. Both page consumers ignore them (assets.html stores
+        # them in lastState but only ever compares asset_count and
+        # scope_hash; schedules.html reads ready_for_selection), so they are
+        # kept only for payload-shape compatibility.
         "variant_ready": variant_ready,
         "variant_processing": variant_processing,
         "variant_failed": variant_failed,
         "scope_hash": scope_hash,
         "assets": assets_detail,
     }
+
+
+@router.get("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
+async def assets_status_json(
+    user: User = Depends(require_permission(ASSETS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight JSON for assets page polling — filtered by user's group access.
+
+    Returns every visible asset. The schedules page relies on this to resolve
+    readiness for assets that are not on screen, so it stays unscoped.
+    """
+    return await _assets_status_payload(user, db, None)
+
+
+class AssetsStatusQuery(BaseModel):
+    """Ids the caller already has rendered and wants fresh state for."""
+
+    ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+
+
+@router.post("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
+async def assets_status_json_scoped(
+    body: AssetsStatusQuery,
+    user: User = Depends(require_permission(ASSETS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Id-scoped twin of ``GET /status`` for the asset library poller.
+
+    Same payload shape, but the per-asset detail covers only ``ids``. Sent as
+    a POST because the library accumulates pages as you scroll and the id list
+    outgrows a comfortable query string.
+    """
+    return await _assets_status_payload(user, db, body.ids)
 
 
 @router.get("", response_model=List[AssetOut])
