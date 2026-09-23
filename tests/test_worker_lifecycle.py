@@ -240,6 +240,127 @@ async def test_lease_lost_path_is_silent(db_engine, tmp_path):
     )
 
 
+# ── Pre-transcode cancellation ──
+#
+# The worker checks for cancellation once more after claiming a job but
+# before spawning ffmpeg. That branch used to mark only the Job, leaving the
+# AssetVariant at PENDING forever: the supersession sweep only soft-deletes
+# variants that are READY/FAILED/CANCELLED, so a PENDING one is never swept,
+# and when the asset is still alive (a profile edit rather than a delete)
+# nothing else revisits it. Every such edit leaked a permanent phantom row
+# into the Transcoding Queue card.
+
+
+async def _run_queue_once(factory, job_id, tmp_path, transcode_mock):
+    """Drive a single _queue_mode pass for `job_id`."""
+    queue_client = _make_queue_client()
+    queue_client.receive_message.return_value = _make_queue_msg(str(job_id))
+
+    import worker.__main__ as wmain
+    wmain._sigterm_received = False
+
+    settings = MagicMock()
+    settings.asset_storage_path = tmp_path / "assets"
+    settings.asset_storage_path.mkdir(exist_ok=True)
+    settings.azure_storage_connection_string = (
+        "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=y;"
+        "EndpointSuffix=core.windows.net"
+    )
+
+    with patch("worker.__main__.get_session_factory", return_value=factory), \
+         patch("worker.transcoder.transcode_variant_by_id", new=transcode_mock), \
+         patch("worker.transcoder.capture_stream_by_id",
+               new=AsyncMock(return_value=False)), \
+         patch("azure.storage.queue.QueueClient.from_connection_string",
+               return_value=queue_client):
+        await wmain._queue_mode(settings)
+
+    return queue_client
+
+
+@_requires_azure_queue
+@pytest.mark.asyncio
+async def test_cancel_requested_terminalises_job_and_variant(db_engine, tmp_path):
+    """An explicitly cancelled job must terminalise BOTH rows."""
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as db:
+        job_id, variant_id = await _seed_asset_variant_job(db)
+        job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        job.cancel_requested = True
+        await db.commit()
+
+    transcode = AsyncMock(return_value=True)
+    await _run_queue_once(factory, job_id, tmp_path, transcode)
+
+    assert not transcode.called, "cancelled job must not spawn ffmpeg"
+
+    async with factory() as db:
+        job_row = (await db.execute(
+            select(Job).where(Job.id == job_id))).scalar_one()
+        variant_row = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id))).scalar_one()
+
+    assert job_row.status == JobStatus.CANCELLED
+    assert variant_row.status == VariantStatus.CANCELLED, (
+        "variant left non-terminal -- this is the phantom-queue-row leak"
+    )
+
+
+@_requires_azure_queue
+@pytest.mark.asyncio
+async def test_soft_deleted_asset_terminalises_the_variant(db_engine, tmp_path):
+    """The other way into the same branch: the source asset went away."""
+    from datetime import datetime, timezone
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as db:
+        job_id, variant_id = await _seed_asset_variant_job(db)
+        variant = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id))).scalar_one()
+        asset = (await db.execute(
+            select(Asset).where(Asset.id == variant.source_asset_id))).scalar_one()
+        asset.deleted_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    transcode = AsyncMock(return_value=True)
+    await _run_queue_once(factory, job_id, tmp_path, transcode)
+
+    assert not transcode.called
+
+    async with factory() as db:
+        variant_row = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id))).scalar_one()
+    assert variant_row.status == VariantStatus.CANCELLED
+
+
+@_requires_azure_queue
+@pytest.mark.asyncio
+async def test_cancel_never_clobbers_an_already_ready_variant(db_engine, tmp_path):
+    """The mirror is guarded on the variant still being non-terminal.
+
+    A late or duplicate delivery of an already-cancelled job must not undo
+    good output -- a READY variant has a valid blob and is being served.
+    """
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as db:
+        job_id, variant_id = await _seed_asset_variant_job(db)
+        job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        job.cancel_requested = True
+        variant = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id))).scalar_one()
+        variant.status = VariantStatus.READY
+        await db.commit()
+
+    await _run_queue_once(factory, job_id, tmp_path, AsyncMock(return_value=True))
+
+    async with factory() as db:
+        variant_row = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id))).scalar_one()
+    assert variant_row.status == VariantStatus.READY, (
+        "cancel mirror downgraded a READY variant"
+    )
+
+
 # ── Listen-mode resilience ──
 #
 # Regression coverage for the v1.37.19 incident: a transient DB error inside

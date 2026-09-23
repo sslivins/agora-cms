@@ -102,3 +102,45 @@ REASON_RENDER_ERROR: Final[str] = "render_error"
 # The handler returned False (failure) without raising, so there is no
 # exception to classify.
 REASON_UNKNOWN: Final[str] = "unknown"
+
+
+# ----------------------------------------------------------------------
+# Variant/job status reconciliation (cms/services/transcoder.py)
+# ----------------------------------------------------------------------
+#
+# A variant's status and its job's status are written by different
+# processes at different times, so they can drift apart.  The reaper's
+# reconciliation sweep repairs the drift; this counter is how we find out
+# it is happening at all, since the repair is otherwise silent.
+#
+# A steady non-zero rate means a write path is leaving variants stranded
+# and should be fixed at source -- the sweep is a backstop, not the
+# design.  ``reason=done_mismatch`` in particular should never be
+# non-zero: it means a job completed successfully while its variant never
+# reached READY, which the sweep deliberately refuses to repair.
+
+variant_reconcile_total: Final = _meter.create_counter(
+    "agora.variant.reconcile",
+    description=(
+        "Variants whose status was found inconsistent with their owning "
+        "job's terminal status, attributed by ``reason`` (cancelled, "
+        "poison_failed, done_mismatch). The first two are repaired; "
+        "done_mismatch is reported only and indicates corruption."
+    ),
+)
+
+
+# Bounded value set for the reconcile ``reason`` attribute.
+
+# Newest job for the variant is CANCELLED but the variant never left
+# PENDING/PROCESSING -- the pre-transcode cancel path's old behaviour.
+REASON_RECONCILE_CANCELLED: Final[str] = "cancelled"
+
+# Newest job exhausted MAX_JOB_RETRIES and is FAILED, but the variant was
+# never mirrored.
+REASON_RECONCILE_POISON_FAILED: Final[str] = "poison_failed"
+
+# Newest job is DONE yet the variant is not READY.  NOT repaired: READY
+# asserts a valid blob plus complete metadata, and a successful dispatch
+# alone is not evidence of either.  Emitted so it can be alerted on.
+REASON_RECONCILE_DONE_MISMATCH: Final[str] = "done_mismatch"
