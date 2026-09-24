@@ -432,3 +432,82 @@ class TestRecoveryLocksItsCandidates:
         async with factory() as db:
             row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
         assert row.status == JobStatus.PROCESSING
+
+class TestCancelSurvivesRecovery:
+    """A cancelled job must not be resurrected by the liveness sweep.
+
+    ``cancel_requested`` is cooperative -- the worker's heartbeat notices
+    it and terminalises the job itself.  A worker that stalls before it
+    ever looks leaves the flag unread on a row the recovery pass is about
+    to terminalise, and the replacement job is a fresh row whose
+    ``cancel_requested`` defaults to false.  Re-enqueueing therefore
+    undoes the cancellation silently.
+    """
+
+    async def test_cancelled_stalled_job_is_not_re_enqueued(self, db_session):
+        variant = await _variant(db_session)
+        job = await _job(db_session, variant, heartbeat_at=_ago(600))
+        job.cancel_requested = True
+        await db_session.commit()
+
+        recovered = await recover_stalled_variants_once(db_session)
+
+        assert variant.id not in recovered, (
+            "recovery re-enqueued a job the user had cancelled"
+        )
+        staged = (
+            await db_session.execute(
+                select(Job).where(
+                    Job.target_id == variant.id, Job.id != job.id
+                )
+            )
+        ).scalars().all()
+        assert staged == [], f"a replacement job was staged: {staged}"
+
+    async def test_cancelled_stalled_job_is_closed_out_as_cancelled(self, db_session):
+        """Not left PROCESSING forever, and not mislabelled FAILED."""
+        variant = await _variant(db_session)
+        job = await _job(db_session, variant, heartbeat_at=_ago(600))
+        job.cancel_requested = True
+        await db_session.commit()
+
+        await recover_stalled_variants_once(db_session)
+        await db_session.refresh(job)
+        await db_session.refresh(variant)
+
+        assert job.status == JobStatus.CANCELLED
+        assert variant.status == VariantStatus.CANCELLED
+        assert variant.progress == 0.0
+
+    async def test_uncancelled_stalled_job_still_recovers(self, db_session):
+        """The guard must not suppress ordinary recovery."""
+        variant = await _variant(db_session)
+        job = await _job(db_session, variant, heartbeat_at=_ago(600))
+        await db_session.commit()
+
+        recovered = await recover_stalled_variants_once(db_session)
+
+        assert variant.id in recovered
+        await db_session.refresh(job)
+        await db_session.refresh(variant)
+        assert job.status == JobStatus.FAILED
+        assert variant.status == VariantStatus.PENDING
+
+    async def test_mixed_batch_splits_correctly(self, db_session):
+        """One cancelled and one live stalled job in the same pass."""
+        dead = await _variant(db_session)
+        dead_job = await _job(db_session, dead, heartbeat_at=_ago(600))
+
+        cancelled = await _variant(db_session)
+        cancelled_job = await _job(db_session, cancelled, heartbeat_at=_ago(600))
+        cancelled_job.cancel_requested = True
+        await db_session.commit()
+
+        recovered = await recover_stalled_variants_once(db_session)
+
+        assert dead.id in recovered
+        assert cancelled.id not in recovered
+        await db_session.refresh(dead_job)
+        await db_session.refresh(cancelled_job)
+        assert dead_job.status == JobStatus.FAILED
+        assert cancelled_job.status == JobStatus.CANCELLED
