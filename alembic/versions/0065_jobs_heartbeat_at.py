@@ -58,4 +58,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("jobs", "heartbeat_at")
+    raise NotImplementedError("downgrade of 0065 is not supported")
