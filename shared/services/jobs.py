@@ -121,18 +121,75 @@ async def enqueue_job(
     return job.id
 
 
+async def notify_outbox(db: AsyncSession) -> None:
+    """Wake the outbox drainer.  Best-effort; the outbox row is durable."""
+    await _notify(db, OUTBOX_NOTIFY_CHANNEL)
+
+
+ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.PROCESSING)
+
+
+async def stage_jobs(
+    db: AsyncSession,
+    specs: Iterable[tuple[JobType, uuid.UUID]],
+) -> list[Job]:
+    """Add Job + outbox rows to the session **without committing**.
+
+    Callers that need the enqueue to be atomic with other changes (e.g.
+    terminalising the job being replaced) use this and commit once
+    themselves.  ``enqueue_jobs`` is the commit-and-notify wrapper.
+
+    Duplicate suppression: a target that already has an active job of the
+    same type is skipped rather than given a second one.  Two active jobs
+    for one variant means two workers transcoding to the same output blob;
+    a partial unique index enforces this at the DB level, and this check
+    keeps the common case from having to rely on an IntegrityError.
+    """
+    specs = list(specs)
+    if not specs:
+        return []
+
+    existing = set()
+    rows = await db.execute(
+        select(Job.type, Job.target_id).where(
+            Job.target_id.in_([tid for _t, tid in specs]),
+            Job.status.in_(ACTIVE_JOB_STATUSES),
+        )
+    )
+    for jtype, tid in rows.all():
+        existing.add((jtype, tid))
+
+    fresh: list[tuple[JobType, uuid.UUID]] = []
+    for t, tid in specs:
+        if (t, tid) in existing:
+            continue
+        # Also guards against the same target appearing twice in one call —
+        # the DB index would reject the second insert.
+        existing.add((t, tid))
+        fresh.append((t, tid))
+    skipped = len(specs) - len(fresh)
+    if skipped:
+        logger.info(
+            "Skipped %d enqueue(s): target already has an active job", skipped
+        )
+    if not fresh:
+        return []
+
+    jobs = [Job(type=t, target_id=tid, status=JobStatus.PENDING) for t, tid in fresh]
+    db.add_all(jobs)
+    await db.flush()
+    db.add_all([JobOutbox(job_id=j.id) for j in jobs])
+    return jobs
+
+
 async def enqueue_jobs(
     db: AsyncSession,
     specs: Iterable[tuple[JobType, uuid.UUID]],
 ) -> list[uuid.UUID]:
     """Bulk-create Job + outbox rows in a single transaction."""
-    specs = list(specs)
-    if not specs:
+    jobs = await stage_jobs(db, specs)
+    if not jobs:
         return []
-    jobs = [Job(type=t, target_id=tid, status=JobStatus.PENDING) for t, tid in specs]
-    db.add_all(jobs)
-    await db.flush()
-    db.add_all([JobOutbox(job_id=j.id) for j in jobs])
     await db.commit()
     for j in jobs:
         await db.refresh(j)

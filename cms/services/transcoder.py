@@ -29,6 +29,8 @@ from shared.services.jobs import (
     drain_outbox,
     enqueue_job,
     enqueue_jobs,
+    notify_outbox,
+    stage_jobs,
 )
 from shared.services.probe import probe_media  # noqa: F401
 
@@ -291,6 +293,11 @@ async def enqueue_variants(
 
     Returns the list of job ids created.  Safe to call with an empty
     iterable (no-op).
+
+    A variant that already has a PENDING or PROCESSING transcode job is
+    skipped, so its id will be absent from the returned list.  Two live
+    jobs for one variant means two workers writing the same output blob;
+    a partial unique index enforces this at the DB level as well.
     """
     specs = [(JobType.VARIANT_TRANSCODE, vid) for vid in variant_ids]
     if not specs:
@@ -700,20 +707,22 @@ async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
 
     variant_ids = [v.id for _job, v in rows]
 
-    # Ordering is load-bearing.  ``enqueue_jobs`` commits in its own
-    # transaction, so creating the replacement *after* terminalising the old
-    # job would leave a window in which the variant is non-terminal with no
-    # active job — exactly the stranded-variant reconciler's candidate
-    # shape.  That reconciler runs every 15s under a *different* advisory
-    # lock in a different replica, so the window is genuinely reachable.
-    # Enqueue first: an active job then exists at every instant.
-    await enqueue_variants(db, variant_ids)
-
+    # Terminalise the dead job and create its replacement in ONE transaction.
+    #
+    # Both orderings are wrong if done as two commits.  Enqueue-then-
+    # terminalise leaves an instant with two active jobs for one variant,
+    # which is the duplicate-worker bug itself and now violates the partial
+    # unique index.  Terminalise-then-enqueue leaves an instant where the
+    # variant is non-terminal with no active job — exactly the
+    # stranded-variant reconciler's candidate shape, and it runs every 15s
+    # under a different advisory lock in a different replica.  Doing both in
+    # one transaction means no other session ever observes either state.
+    #
+    # FAILED, not CANCELLED: the reconciler terminalises a variant whose
+    # newest job is CANCELLED unconditionally, but only acts on FAILED once
+    # retries are exhausted.  retry_count is left untouched, so this stays
+    # inert to it.
     for job, variant in rows:
-        # FAILED, not CANCELLED: the reconciler terminalises a variant whose
-        # newest job is CANCELLED unconditionally, but only acts on FAILED
-        # once retries are exhausted.  retry_count is left untouched, so
-        # this stays inert to it.
         job.status = JobStatus.FAILED
         job.error_message = (
             f"no heartbeat for >{_STALE_HEARTBEAT_TIMEOUT}s — worker presumed dead"
@@ -722,11 +731,23 @@ async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
         variant.status = VariantStatus.PENDING
         variant.progress = 0.0
 
+    # Make the terminalisations visible to the dedupe SELECT inside
+    # stage_jobs before it runs.  Autoflush would do this today, but relying
+    # on it is a trap: if autoflush is ever disabled on this session the
+    # check would see the dead job as still active, skip the replacement and
+    # silently abandon the variant in PENDING with nothing to run it.
+    await db.flush()
+
+    staged = await stage_jobs(
+        db, [(JobType.VARIANT_TRANSCODE, vid) for vid in variant_ids]
+    )
     await db.commit()
+    await notify_outbox(db)
 
     logger.warning(
-        "Recovered %d variant(s) whose worker stopped heartbeating for >%ds: %s",
-        len(rows), _STALE_HEARTBEAT_TIMEOUT,
+        "Recovered %d variant(s) whose worker stopped heartbeating for >%ds "
+        "(%d replacement job(s) staged): %s",
+        len(rows), _STALE_HEARTBEAT_TIMEOUT, len(staged),
         ", ".join(str(vid) for vid in variant_ids),
     )
     return variant_ids
@@ -1261,10 +1282,10 @@ async def reconcile_stranded_variants_once(db, limit: int = 100) -> int:
       :func:`reap_deleted_assets_once`, which gates on job status and
       hard-deletes regardless of variant status.
     * **"No active job", not "a terminal job exists".** A variant can have
-      several jobs -- ``enqueue_variants`` always inserts a new row, and
-      the stale-PROCESSING monitor re-enqueues by creating another one
-      without terminating the old. An old FAILED job sitting alongside a
-      live one must not terminalise the variant.
+      several jobs -- ``enqueue_variants`` skips a target that already has
+      an active transcode but still inserts a new row once the old one is
+      terminal, so history accumulates. An old FAILED job sitting
+      alongside a live one must not terminalise the variant.
     * **The newest job decides.** Older terminal jobs are history.
     * **FAILED only when genuinely poison.** ``claim_job`` flips a job to
       FAILED only once ``retry_count`` exceeds the limit; a FAILED row
