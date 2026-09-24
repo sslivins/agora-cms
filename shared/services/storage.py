@@ -309,13 +309,24 @@ class AzureStorageBackend(StorageBackend):
             logger.exception("Failed to sync %s to blob storage", relative_path)
 
     async def on_file_deleted(self, relative_path: str) -> None:
-        """Delete the blob from Azure Blob Storage."""
+        """Delete the blob from Azure Blob Storage.
+
+        A missing blob is not an error: a variant whose transcode failed
+        before producing output never had one uploaded, so deleting its
+        asset legitimately finds nothing to remove.  The desired end
+        state — no blob — already holds, so this is logged at debug and
+        must not surface as exception telemetry.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
         container, blob_name = self._blob_location(relative_path)
         try:
             container_client = self._service_client.get_container_client(container)
             blob_client = container_client.get_blob_client(blob_name)
             await blob_client.delete_blob(delete_snapshots="include")
             logger.info("Deleted blob: %s/%s", container, blob_name)
+        except ResourceNotFoundError:
+            logger.debug("Blob already absent, nothing to delete: %s/%s", container, blob_name)
         except Exception:
             logger.exception("Failed to delete blob %s/%s", container, blob_name)
 
