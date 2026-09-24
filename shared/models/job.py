@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,6 +53,28 @@ MAX_JOB_RETRIES = 3
 
 class Job(Base):
     __tablename__ = "jobs"
+
+    # At most one live VARIANT_TRANSCODE job per variant.  Two active jobs
+    # for one variant means two workers transcoding to the same output blob
+    # concurrently — see migration 0066.  Restricted to VARIANT_TRANSCODE on
+    # purpose: other job types legitimately re-enqueue the same target
+    # (re-synthesising an edited voice announcement, re-importing a failed
+    # base image), and a blanket constraint would turn those into 500s.
+    __table_args__ = (
+        Index(
+            "uq_jobs_one_active_per_variant",
+            "target_id",
+            unique=True,
+            postgresql_where=text(
+                "type = 'VARIANT_TRANSCODE' "
+                "AND status IN ('PENDING', 'PROCESSING')"
+            ),
+            sqlite_where=text(
+                "type = 'VARIANT_TRANSCODE' "
+                "AND status IN ('PENDING', 'PROCESSING')"
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
