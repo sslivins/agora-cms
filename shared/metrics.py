@@ -146,20 +146,30 @@ REASON_RECONCILE_POISON_FAILED: Final[str] = "poison_failed"
 REASON_RECONCILE_DONE_MISMATCH: Final[str] = "done_mismatch"
 
 
-# Hard-delete (reaper) failures.  The reaper unlinks an asset's blobs from
-# storage *before* deleting its rows, so a failure here is not benign: it
-# leaves an asset row pointing at a file that no longer exists, and the
-# same asset re-fails on every subsequent tick.  Because the reaper catches
-# per-asset exceptions so one bad row can't stall the rest of the sweep,
-# this counter is the only non-log signal that it is wedged.
+# Hard-delete (reaper) failures.  The reaper frees an asset's blobs from
+# storage *before* deleting its rows, so a failure here leaves the row
+# behind describing a file that is already gone, and the same asset
+# re-fails on every subsequent tick.  Because the reaper catches per-asset
+# exceptions so one bad row can't stall the rest of the sweep, this counter
+# is the only non-log signal that it is wedged.
 #
-# Any sustained non-zero rate means a soft-deleted asset can never be
-# reaped -- storage and rows leak without bound.  Alert on it.
+# What this does *not* mean, so nobody chases the wrong thing when it
+# fires: storage is not leaking, and nothing user-visible is broken.  The
+# blobs were freed before the failure, and soft-deleted assets are filtered
+# out of every serving path, so the surviving row is never handed to a
+# device or the UI.  The cost is that the row (and its variant rows) can
+# never be collected, and the reaper burns a retry on it every tick.
+#
+# That ordering is deliberate, not an oversight: freeing the expensive
+# thing first means a mid-sweep failure strands cheap rows rather than
+# orphaning blobs that no surviving row would ever point at again.  Rows
+# are recoverable once the cause is fixed; unreferenced blobs would not be.
 asset_reap_failure_total: Final = _meter.create_counter(
     "agora.asset.reap_failure",
     description=(
-        "Soft-deleted assets the reaper failed to hard-delete. The blob is "
-        "already unlinked by the time this fires, so a sustained non-zero "
-        "rate means permanently orphaned rows and a storage leak."
+        "Soft-deleted assets the reaper failed to hard-delete. Blobs are "
+        "already freed by the time this fires, so this is a leak of DB rows "
+        "and wasted retries, not of storage -- but it never self-resolves, "
+        "so any sustained non-zero rate needs the underlying cause fixed."
     ),
 )
