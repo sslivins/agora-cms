@@ -7,8 +7,10 @@ Verifies that:
   is deleted.
 """
 
+import logging
 import uuid
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -537,4 +539,74 @@ class TestReapVoiceAnnouncementAsset:
         assert counter.add.call_count == 1, (
             "Reaper swallowed a hard-delete failure without emitting the "
             "asset_reap_failure_total counter."
+        )
+
+
+# -- Blob deletion: a missing blob is not an error --
+
+
+class TestAzureBlobDeleteMissingBlob:
+    """A blob that was never written must not surface as exception telemetry.
+
+    Regression test: ``on_file_deleted`` logged every failure with
+    ``logger.exception``, which Application Insights records as exception
+    telemetry.  Deleting an asset whose transcode failed before producing
+    output therefore fired the Sev2 "CMS unhandled exceptions" alert for a
+    completely expected condition -- the blob was never uploaded, so the
+    desired end state (no blob) already holds.
+    """
+
+    @staticmethod
+    def _backend_raising(exc):
+        """An AzureStorageBackend whose delete_blob raises ``exc``."""
+        from shared.services.storage import AzureStorageBackend
+
+        conn = (
+            "DefaultEndpointsProtocol=https;AccountName=fake;"
+            "AccountKey=Zm9vYmFy;EndpointSuffix=core.windows.net"
+        )
+        backend = AzureStorageBackend(Path("."), conn)
+
+        blob_client = MagicMock()
+        blob_client.delete_blob = AsyncMock(side_effect=exc)
+        container_client = MagicMock()
+        container_client.get_blob_client.return_value = blob_client
+        service_client = MagicMock()
+        service_client.get_container_client.return_value = container_client
+        backend._service_client = service_client
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_missing_blob_is_not_exception_telemetry(self, caplog):
+        """ResourceNotFoundError is benign and must not log at ERROR."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        backend = self._backend_raising(ResourceNotFoundError("blob not found"))
+
+        with caplog.at_level(logging.DEBUG, logger="agora.cms.storage"):
+            await backend.on_file_deleted("variants/never-written.mp4")
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert not errors, (
+            "Deleting an absent blob emitted ERROR-level telemetry, which "
+            "fires the Sev2 CMS-exceptions alert for an expected condition: "
+            f"{[r.getMessage() for r in errors]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_real_delete_failure_still_reported(self, caplog):
+        """A genuine failure must still be reported -- we did not swallow all."""
+        backend = self._backend_raising(RuntimeError("storage account unreachable"))
+
+        with caplog.at_level(logging.DEBUG, logger="agora.cms.storage"):
+            await backend.on_file_deleted("variants/real-failure.mp4")
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1, (
+            "A genuine blob-delete failure must still surface as exception "
+            f"telemetry; got {len(errors)} ERROR record(s)."
+        )
+        assert errors[0].exc_info is not None, (
+            "Genuine failure was logged without exc_info, so App Insights "
+            "would not record it as an exception."
         )
