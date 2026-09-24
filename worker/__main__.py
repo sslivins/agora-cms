@@ -675,7 +675,9 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             job.id, job.type.value, job.target_id, job.retry_count,
         )
         if job.type == JobType.VARIANT_TRANSCODE:
-            success = await transcode_variant_by_id(session_factory, asset_dir, job.target_id)
+            success = await transcode_variant_by_id(
+                session_factory, asset_dir, job.target_id, job.id
+            )
         elif job.type == JobType.STREAM_CAPTURE:
             success = await capture_stream_by_id(session_factory, asset_dir, job.target_id)
         elif job.type == JobType.VOICE_SYNTHESIS:
