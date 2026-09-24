@@ -4930,10 +4930,16 @@ paths:
       description: |-
         Unauthenticated aggregated health probe for post-deploy smoke tests.
 
-        Returns boolean status for each subsystem (db, mcp, smtp) plus the
-        deployed version, without exposing any sensitive configuration.  Intended
-        for CI/monitoring callers that cannot authenticate.  The authenticated
-        UI equivalent ``/api/system/health`` returns richer detail for humans.
+        Returns boolean status for each subsystem (db, mcp, smtp, outbox) plus
+        the deployed version, without exposing any sensitive configuration.
+        Intended for CI/monitoring callers that cannot authenticate.  The
+        authenticated UI equivalent ``/api/system/health`` returns richer detail
+        for humans.
+
+        Note this is deliberately *not* ``/healthz``: that one is the container
+        liveness probe, and reporting a backlog there would have the platform
+        restart the replica, which does nothing for a stalled drainer and drops
+        in-flight requests.
       operationId: healthz_system_healthz_system_get
       responses:
         '200':
