@@ -328,6 +328,7 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     current_popreceipt = msg.pop_receipt
     cancel_observed = False        # set by heartbeat when Job.cancel_requested is true
     lease_actually_lost = False    # set by heartbeat when update_message fails
+    job_evicted = False            # set by heartbeat when the Job row left PROCESSING
 
     # SIGTERM handler — installed before any real work begins.  If the pod
     # hits Container App Jobs `replicaTimeout` we get ~30s of grace before
@@ -357,6 +358,7 @@ async def _queue_mode(settings: WorkerSettings) -> None:
 
     async def _heartbeat():
         nonlocal current_popreceipt, cancel_observed, lease_actually_lost
+        nonlocal job_evicted
         # ── Renew immediately on start, then sleep.  The old sleep-first
         # pattern left a 15s window at the start of the job with no renewal,
         # so if pre-flight work took more than (VISIBILITY_TIMEOUT - 15s),
@@ -378,19 +380,64 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 # CMS staleness monitor can tell "slow" from "dead") and
                 # read back whether CMS has flagged this job for cancel.
                 # This replaced a bare SELECT, so it adds no extra load.
+                #
+                # The terminal-status predicate is load-bearing, not
+                # defensive tidiness.  Without it this UPDATE matches on id
+                # alone, so a worker whose job the CMS staleness monitor has
+                # already terminalised keeps stamping a FAILED row and keeps
+                # transcoding — while the replacement job the monitor staged
+                # transcodes the same variant to the same output blob.  That
+                # is the original duplicate-writer bug, reached by a second
+                # route: the DB being unreachable from the *worker* for
+                # >120s while the queue stays reachable, so the lease keeps
+                # renewing and nothing else notices.  Matching zero rows is
+                # the only in-band signal that we no longer own this job.
+                #
+                # Match on "not terminal" rather than "== PROCESSING": this
+                # task is started deliberately before claim_job, so its first
+                # stamp can legitimately land while the row is still PENDING.
+                # Requiring PROCESSING there would read normal startup as an
+                # eviction and kill every transcode.
                 try:
                     from sqlalchemy import func as _sa_func
                     from sqlalchemy import update as _sa_update
+                    from shared.services.jobs import _TERMINAL_JOB_STATUSES
 
                     async with session_factory() as _db:
                         row = await _db.execute(
                             _sa_update(Job)
-                            .where(Job.id == job_id)
+                            .where(
+                                Job.id == job_id,
+                                Job.status.not_in(_TERMINAL_JOB_STATUSES),
+                            )
                             .values(heartbeat_at=_sa_func.now())
                             .returning(Job.cancel_requested)
                         )
                         flag = row.scalar_one_or_none()
                         await _db.commit()
+                        if flag is None:
+                            # Zero rows matched.  ``cancel_requested`` is NOT
+                            # NULL, so this can only mean the row is gone or
+                            # has reached a terminal state — i.e. someone else
+                            # decided this job was over.  Stop immediately:
+                            # the variant already has a replacement worker,
+                            # and anything we write from here stomps on it.
+                            logger.warning(
+                                "Job %s: reached a terminal state while still "
+                                "running — evicted by CMS, killing ffmpeg and "
+                                "exiting silent",
+                                job_id,
+                            )
+                            job_evicted = True
+                            try:
+                                from worker.transcoder import cancel_active_ffmpeg
+                                cancel_active_ffmpeg()
+                            except Exception:
+                                logger.exception(
+                                    "Failed to cancel active ffmpeg after eviction"
+                                )
+                            lease_lost.set()
+                            return
                         if flag:
                             cancel_observed = True
                             logger.info(
@@ -713,6 +760,33 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 metrics.ATTR_JOB_TYPE: job.type.value,
             },
         )
+    elif job_evicted:
+        # The CMS staleness monitor terminalised this job while we were still
+        # working, and has already staged a replacement.  The replacement
+        # owns the variant now, so touching the Job or AssetVariant row here
+        # would stomp on it — in particular ``mark_done`` would flip our
+        # FAILED row back to DONE and hide the fact that anything went wrong.
+        #
+        # The queue message *is* still ours (the lease never lapsed), and it
+        # is now obsolete, so delete it.  Leaving it to redeliver would send
+        # it through ``claim_job``, which flips the row back to PROCESSING —
+        # resurrecting a terminalised job into a second active job for a
+        # variant that already has one.  That write is refused by
+        # ``uq_jobs_one_active_per_variant``, so it would fail loudly and
+        # redeliver forever rather than corrupt anything, but a poison
+        # message loop is still not an outcome worth choosing.
+        logger.warning(
+            "Job %s: evicted by CMS staleness recovery — exiting silent, "
+            "replacement job owns the variant",
+            job_id,
+        )
+        try:
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
+        except Exception:
+            logger.warning(
+                "Job %s evicted but queue delete failed", job_id, exc_info=True
+            )
+        metrics.transcode_evicted_total.add(1, {metrics.ATTR_JOB_TYPE: job.type.value})
     elif lease_actually_lost:
         # Another worker has (or will) pick up the re-visible message and
         # owns the job now.  Do NOT touch DB or queue — we'd stomp on the

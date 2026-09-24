@@ -40,6 +40,14 @@ logger = logging.getLogger("agora.jobs")
 
 QUEUE_NAME = "transcode-jobs"
 
+# Job states that no worker may transition out of.  Reaching one of these
+# means ownership of the job has been decided — either by the worker itself
+# or by the CMS staleness monitor evicting a worker it believed dead — so a
+# late write from the previous owner must not be allowed to undo it.
+_TERMINAL_JOB_STATUSES = frozenset(
+    {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED}
+)
+
 # ── Outbox drainer config ──
 # Drainer pulls at most this many rows per cycle.  Keeps each cycle bounded
 # so a huge backlog can't starve the rest of the scheduler loop.
@@ -268,13 +276,31 @@ async def claim_job(db: AsyncSession, job_id: uuid.UUID) -> Job | None:
 
 
 async def mark_done(db: AsyncSession, job_id: uuid.UUID) -> None:
-    """Mark a job DONE."""
+    """Mark a job DONE.
+
+    Refuses to resurrect a job that has already reached a terminal state.
+    Without that guard a worker the CMS staleness monitor had terminalised
+    could finish its (now obsolete) transcode and flip its own FAILED row to
+    DONE — erasing the evidence that a replacement had been staged, and
+    presenting a variant written by two concurrent workers as a clean
+    success.  The worker-side eviction check should stop us long before we
+    get here; this is the backstop for the window between the monitor's
+    commit and the worker's next heartbeat.
+    """
     from sqlalchemy import select
 
     async with db.begin():
         result = await db.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one_or_none()
         if job is None:
+            return
+        if job.status in _TERMINAL_JOB_STATUSES:
+            logger.warning(
+                "Job %s: refusing to mark DONE — already terminal (%s). "
+                "This job was terminalised by someone else while the worker "
+                "was still running it.",
+                job_id, job.status.value,
+            )
             return
         job.status = JobStatus.DONE
         job.error_message = ""
