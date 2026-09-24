@@ -386,3 +386,155 @@ class TestDeleteAssetCleansVariants:
                 select(AssetVariant).where(AssetVariant.id == vid)
             )
             assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+class TestReapVoiceAnnouncementAsset:
+    """A soft-deleted voice-announcement asset must actually be reapable.
+
+    ``VoiceAnnouncement.asset_id`` is ``nullable=False`` with a DB-level
+    ``ondelete="CASCADE"``, and ``Asset.voice_announcement`` sets
+    ``passive_deletes=True`` so the DB is meant to do the cascading.  But
+    that relationship is also ``lazy="selectin"``, so the child row is
+    *already loaded* by the time the reaper issues ``db.delete(asset)`` --
+    and ``passive_deletes`` only suppresses the *load*, not the
+    de-association of children already in the session.  Without a delete
+    cascade the ORM therefore emits ``UPDATE voice_announcements SET
+    asset_id=NULL``, which violates the NOT NULL constraint and aborts the
+    hard-delete forever.
+
+    This is not a cosmetic failure: the reaper unlinks the blob from
+    storage *before* deleting the rows, so a failure here leaves a
+    permanent zombie asset row pointing at a file that no longer exists,
+    and it re-fails on every subsequent tick.
+    """
+
+    async def _voice_asset(self, db_session, storage_path, filename):
+        from cms.models.voice_announcement import VoiceAnnouncement
+        from shared.models.job import JobStatus
+
+        asset = Asset(filename=filename, asset_type=AssetType.VOICE_ANNOUNCEMENT,
+                      size_bytes=100, checksum=uuid.uuid4().hex[:8])
+        db_session.add(asset)
+        await db_session.flush()
+
+        db_session.add(VoiceAnnouncement(
+            asset_id=asset.id,
+            script_text="Attention shoppers, this is a test announcement.",
+            voice_name="en-US-Olivia:MAI-Voice-2",
+            language="en-US",
+            generation_status=JobStatus.DONE,
+        ))
+        await db_session.commit()
+
+        (storage_path / filename).write_bytes(b"fake-opus")
+        return asset
+
+    async def test_voice_announcement_asset_is_hard_deleted(
+        self, client, db_session, app
+    ):
+        """The reaper must remove the asset row, not choke on the FK."""
+        from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
+        settings = app.dependency_overrides[get_settings]()
+
+        asset = await self._voice_asset(
+            db_session, settings.asset_storage_path, "reap-voice.opus"
+        )
+        asset_id = asset.id
+
+        resp = await client.delete(f"/api/assets/{asset_id}")
+        assert resp.status_code == 200
+
+        reaped = await reap_deleted_assets_once(db_session, settings=settings)
+        assert reaped == 1, (
+            "Reaper silently swallowed the failure -- the asset row survives "
+            "even though its blob has already been unlinked."
+        )
+
+        gone = await db_session.execute(select(Asset).where(Asset.id == asset_id))
+        assert gone.scalar_one_or_none() is None
+
+    async def test_voice_announcement_row_is_deleted_not_orphaned(
+        self, client, db_session, app
+    ):
+        """The child row must go too -- nulling its FK is not an option."""
+        from cms.auth import get_settings
+        from cms.models.voice_announcement import VoiceAnnouncement
+        from cms.services.transcoder import reap_deleted_assets_once
+        settings = app.dependency_overrides[get_settings]()
+
+        asset = await self._voice_asset(
+            db_session, settings.asset_storage_path, "reap-voice-child.opus"
+        )
+        asset_id = asset.id
+
+        resp = await client.delete(f"/api/assets/{asset_id}")
+        assert resp.status_code == 200
+
+        await reap_deleted_assets_once(db_session, settings=settings)
+
+        rows = (await db_session.execute(
+            select(VoiceAnnouncement).where(VoiceAnnouncement.asset_id == asset_id)
+        )).scalars().all()
+        assert rows == []
+
+    async def test_blob_and_row_removal_agree(self, client, db_session, app):
+        """Guard the exact zombie shape: blob gone but row still present."""
+        from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
+        settings = app.dependency_overrides[get_settings]()
+
+        asset = await self._voice_asset(
+            db_session, settings.asset_storage_path, "reap-voice-zombie.opus"
+        )
+        asset_id = asset.id
+        blob = settings.asset_storage_path / "reap-voice-zombie.opus"
+        assert blob.is_file()
+
+        resp = await client.delete(f"/api/assets/{asset_id}")
+        assert resp.status_code == 200
+
+        await reap_deleted_assets_once(db_session, settings=settings)
+
+        row_gone = (await db_session.execute(
+            select(Asset).where(Asset.id == asset_id)
+        )).scalar_one_or_none() is None
+        assert row_gone == (not blob.is_file()), (
+            f"blob_present={blob.is_file()} row_gone={row_gone} -- the reaper "
+            "must not delete the blob while leaving the row behind."
+        )
+
+    async def test_reap_failure_is_counted(self, client, db_session, app):
+        """A swallowed reap failure must still raise an alertable signal.
+
+        The reaper deliberately catches per-asset exceptions so one bad row
+        cannot stall the whole sweep. That is correct, but it means the only
+        evidence is a log line -- which is exactly how the voice-announcement
+        breakage above went unnoticed. Pin the counter so it stays.
+        """
+        from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
+        settings = app.dependency_overrides[get_settings]()
+
+        asset = await self._voice_asset(
+            db_session, settings.asset_storage_path, "reap-voice-metric.opus"
+        )
+
+        resp = await client.delete(f"/api/assets/{asset.id}")
+        assert resp.status_code == 200
+
+        boom = RuntimeError("simulated hard-delete failure")
+
+        async def _raise(_obj):
+            raise boom
+
+        with patch("shared.metrics.asset_reap_failure_total") as counter:
+            with patch.object(db_session, "delete", _raise):
+                reaped = await reap_deleted_assets_once(db_session, settings=settings)
+
+        assert reaped == 0
+        assert counter.add.call_count == 1, (
+            "Reaper swallowed a hard-delete failure without emitting the "
+            "asset_reap_failure_total counter."
+        )

@@ -144,3 +144,22 @@ REASON_RECONCILE_POISON_FAILED: Final[str] = "poison_failed"
 # asserts a valid blob plus complete metadata, and a successful dispatch
 # alone is not evidence of either.  Emitted so it can be alerted on.
 REASON_RECONCILE_DONE_MISMATCH: Final[str] = "done_mismatch"
+
+
+# Hard-delete (reaper) failures.  The reaper unlinks an asset's blobs from
+# storage *before* deleting its rows, so a failure here is not benign: it
+# leaves an asset row pointing at a file that no longer exists, and the
+# same asset re-fails on every subsequent tick.  Because the reaper catches
+# per-asset exceptions so one bad row can't stall the rest of the sweep,
+# this counter is the only non-log signal that it is wedged.
+#
+# Any sustained non-zero rate means a soft-deleted asset can never be
+# reaped -- storage and rows leak without bound.  Alert on it.
+asset_reap_failure_total: Final = _meter.create_counter(
+    "agora.asset.reap_failure",
+    description=(
+        "Soft-deleted assets the reaper failed to hard-delete. The blob is "
+        "already unlinked by the time this fires, so a sustained non-zero "
+        "rate means permanently orphaned rows and a storage leak."
+    ),
+)

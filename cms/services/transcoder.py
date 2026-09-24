@@ -1005,6 +1005,11 @@ async def reap_deleted_assets_once(db, settings=None) -> int:
             logger.info("Reaper: hard-deleted asset %s (%s)", asset.id, asset.filename)
         except Exception:
             logger.exception("Reaper: failed to hard-delete asset %s", asset.id)
+            from shared.metrics import asset_reap_failure_total
+            # The blob was already unlinked above, so this asset row is now
+            # orphaned and will re-fail every tick until someone fixes the
+            # cause. Emit a metric -- the log alone is not alertable.
+            asset_reap_failure_total.add(1)
             try:
                 await db.rollback()
             except Exception:
