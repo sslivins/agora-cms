@@ -59,6 +59,15 @@ Asset.voice_announcement = relationship(
     uselist=False,
     lazy="selectin",
     passive_deletes=True,
+    # ``VoiceAnnouncement.asset_id`` is NOT NULL, so the ORM's default
+    # "de-associate the child by nulling its FK" behaviour on parent delete
+    # is not merely wasteful here -- it raises NotNullViolation and aborts
+    # the delete. ``passive_deletes=True`` alone does not prevent that:
+    # it suppresses the *load* of children, but ``lazy="selectin"`` has
+    # already loaded this one, and already-loaded children are still
+    # de-associated. The delete cascade is what makes the ORM delete the
+    # child row instead, letting the DB-level ondelete="CASCADE" stand.
+    cascade="all, delete-orphan",
     back_populates="asset",
 )
 
