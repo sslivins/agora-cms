@@ -33,7 +33,10 @@ dist/
 *.egg-info/
 build.log
 test_results.txt
-test_out*
+# Root-anchored: unanchored, this also matches tests/test_out*.py, which
+# silently excludes new test files from commits. tests/test_outbox.py only
+# survives because it was tracked before this rule existed.
+/test_out*
 
 # Docker overrides
 docker-compose.override.yml
