@@ -75,6 +75,27 @@ class Job(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Liveness signal for the worker that currently holds this job.  The
+    # worker's heartbeat loop stamps this every HEARTBEAT_INTERVAL seconds
+    # for the whole life of the job, in the same DB round-trip it already
+    # makes to probe ``cancel_requested`` — so this costs nothing extra.
+    #
+    # This is the *only* trustworthy liveness signal for a running job.
+    # ``AssetVariant.progress`` is not: it is only written when ffmpeg
+    # reports a duration (never for livestreams or un-probeable inputs),
+    # it stops entirely once the estimate clamps at 99%, and the image /
+    # thumbnail / webpage branches jump 0 → 100 with nothing between.
+    # Staleness detection must key off this column, not progress or
+    # ``created_at`` (which measures total elapsed time, so it declares
+    # any legitimately-slow job dead and re-enqueues it forever).
+    #
+    # NULL means "claimed before this column existed" — treat
+    # ``created_at`` as the fallback so a deploy mid-transcode doesn't
+    # reap every in-flight job.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Coarse-grained progress for UI polling.  ``progress_stage`` is a
     # short worker-defined label (e.g. ``downloading``, ``building``,
     # ``uploading``).  ``progress_pct`` is an optional 0-100 estimate;

@@ -202,6 +202,11 @@ async def claim_job(db: AsyncSession, job_id: uuid.UUID) -> Job | None:
         else:
             job.status = JobStatus.PROCESSING
             job.error_message = ""
+            # Stamp liveness at the PENDING→PROCESSING transition so the
+            # staleness monitor has a real timestamp from the moment the
+            # job starts, rather than falling back to created_at until the
+            # worker's first heartbeat cycle lands.
+            job.heartbeat_at = datetime.now(timezone.utc)
     return job
 
 
