@@ -723,6 +723,39 @@ async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
 
     variant_ids = [v.id for _job, v in rows]
 
+    # A stalled job that was already flagged for cancellation must not come
+    # back.  ``cancel_requested`` is cooperative: the worker's heartbeat
+    # notices the flag and terminalises the job itself.  If that worker
+    # stalled before it ever looked, the flag is still sitting unread on a
+    # row this pass is about to terminalise.
+    #
+    # Staging a replacement here would resurrect the work, because the
+    # pre-transcode cancel check in the worker reads ``cancel_requested``
+    # off the job row it claimed, and the replacement is a *new* row that
+    # defaults to false.  The user's cancellation would be silently undone
+    # by a liveness sweep -- and for the profile-edit path, which cancels
+    # in-flight jobs precisely because their output is about to be
+    # obsolete, it would republish a variant built to superseded settings.
+    #
+    # So these are closed out as CANCELLED rather than FAILED, mirroring
+    # what the worker would have done had it lived long enough to notice,
+    # and no replacement is staged.
+    cancelled_rows = [(j, v) for j, v in rows if j.cancel_requested]
+    live_rows = [(j, v) for j, v in rows if not j.cancel_requested]
+
+    for job, variant in cancelled_rows:
+        job.status = JobStatus.CANCELLED
+        job.error_message = (
+            "cancel_requested on job; worker stopped heartbeating before it "
+            "observed the flag"
+        )
+        job.completed_at = datetime.now(timezone.utc)
+        variant.status = VariantStatus.CANCELLED
+        variant.progress = 0.0
+
+    # Only the genuinely-live-but-dead jobs get replacements.
+    variant_ids = [v.id for _job, v in live_rows]
+
     # Terminalise the dead job and create its replacement in ONE transaction.
     #
     # Both orderings are wrong if done as two commits.  Enqueue-then-
@@ -738,7 +771,7 @@ async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
     # newest job is CANCELLED unconditionally, but only acts on FAILED once
     # retries are exhausted.  retry_count is left untouched, so this stays
     # inert to it.
-    for job, variant in rows:
+    for job, variant in live_rows:
         job.status = JobStatus.FAILED
         job.error_message = (
             f"no heartbeat for >{_STALE_HEARTBEAT_TIMEOUT}s — worker presumed dead"
@@ -762,8 +795,8 @@ async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
 
     logger.warning(
         "Recovered %d variant(s) whose worker stopped heartbeating for >%ds "
-        "(%d replacement job(s) staged): %s",
-        len(rows), _STALE_HEARTBEAT_TIMEOUT, len(staged),
+        "(%d replacement job(s) staged; %d closed out as cancelled): %s",
+        len(rows), _STALE_HEARTBEAT_TIMEOUT, len(staged), len(cancelled_rows),
         ", ".join(str(vid) for vid in variant_ids),
     )
     return variant_ids
