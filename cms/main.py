@@ -1057,13 +1057,24 @@ async def healthz(db: AsyncSession = Depends(get_db)):
 async def healthz_system(db: AsyncSession = Depends(get_db)):
     """Unauthenticated aggregated health probe for post-deploy smoke tests.
 
-    Returns boolean status for each subsystem (db, mcp, smtp) plus the
-    deployed version, without exposing any sensitive configuration.  Intended
-    for CI/monitoring callers that cannot authenticate.  The authenticated
-    UI equivalent ``/api/system/health`` returns richer detail for humans.
+    Returns boolean status for each subsystem (db, mcp, smtp, outbox) plus
+    the deployed version, without exposing any sensitive configuration.
+    Intended for CI/monitoring callers that cannot authenticate.  The
+    authenticated UI equivalent ``/api/system/health`` returns richer detail
+    for humans.
+
+    Note this is deliberately *not* ``/healthz``: that one is the container
+    liveness probe, and reporting a backlog there would have the platform
+    restart the replica, which does nothing for a stalled drainer and drops
+    in-flight requests.
     """
     from sqlalchemy import text
     import httpx
+    from shared.services.jobs import (
+        OUTBOX_AGE_ERROR_SECONDS,
+        OUTBOX_AGE_WARN_SECONDS,
+        outbox_oldest_age_seconds,
+    )
     from cms.auth import (
         SETTING_MCP_ENABLED,
         SETTING_SMTP_HOST,
@@ -1102,6 +1113,25 @@ async def healthz_system(db: AsyncSession = Depends(get_db)):
 
     overall_ok = db_ok and (not mcp_enabled or mcp_online)
 
+    # Outbox drainer liveness.  Jobs reach workers only via the outbox, so a
+    # stalled drainer looks exactly like "nothing is transcoding" with no
+    # error anywhere.  Age of the oldest undrained row is the signal.
+    #
+    # Only the error threshold feeds ``overall_ok``.  A backlog of a few
+    # seconds is normal (the drainer is NOTIFY-driven with a polling
+    # fallback), and post-deploy verify calls this endpoint — marking the
+    # deploy degraded over an ordinary tick would be pure noise.
+    outbox_age: float | None = None
+    outbox_ok = True
+    try:
+        outbox_age = await outbox_oldest_age_seconds(db)
+    except Exception:
+        # Unknown, not broken: don't fail a deploy over an observability read.
+        outbox_age = None
+    if outbox_age is not None and outbox_age > OUTBOX_AGE_ERROR_SECONDS:
+        outbox_ok = False
+    overall_ok = overall_ok and outbox_ok
+
     # Deploy-shape config check.  Catches "container booted but a
     # required-for-this-deployment-shape env var is missing", which
     # otherwise only surfaces when a real user hits the affected code
@@ -1117,6 +1147,17 @@ async def healthz_system(db: AsyncSession = Depends(get_db)):
         "db": {"ok": db_ok},
         "mcp": {"enabled": mcp_enabled, "ok": mcp_online},
         "smtp": {"configured": smtp_configured},
+        "outbox": {
+            "ok": outbox_ok,
+            "oldest_age_seconds": (
+                round(outbox_age, 1) if outbox_age is not None else None
+            ),
+            "warn_threshold_seconds": OUTBOX_AGE_WARN_SECONDS,
+            "error_threshold_seconds": OUTBOX_AGE_ERROR_SECONDS,
+            "backlogged": (
+                outbox_age is not None and outbox_age > OUTBOX_AGE_WARN_SECONDS
+            ),
+        },
         "config": {
             "ok": config_ok,
             "missing": [

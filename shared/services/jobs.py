@@ -384,11 +384,18 @@ async def drain_outbox(db: AsyncSession) -> int:
     return sent
 
 
+OUTBOX_AGE_WARN_SECONDS = 60.0
+OUTBOX_AGE_ERROR_SECONDS = 300.0
+
+
 async def outbox_oldest_age_seconds(db: AsyncSession) -> float | None:
     """Return age in seconds of the oldest pending outbox row, or None if empty.
 
-    Used by health checks / observability to detect a stalled drainer.
-    Suggested thresholds: warn > 60s, error > 300s.
+    Jobs reach workers only via the outbox, so a stalled drainer presents as
+    "nothing is transcoding" with no error logged anywhere.  The age of the
+    oldest undrained row is the signal that distinguishes it from an idle
+    system.  Surfaced by ``/healthz/system``; see
+    :data:`OUTBOX_AGE_WARN_SECONDS` / :data:`OUTBOX_AGE_ERROR_SECONDS`.
     """
     result = await db.execute(
         select(JobOutbox.created_at).order_by(JobOutbox.created_at.asc()).limit(1)
