@@ -204,6 +204,60 @@ async def _source_asset_is_deleted(db: AsyncSession, asset_id: uuid.UUID) -> boo
     return deleted_at is not None
 
 
+async def _owner_job_lost(db: AsyncSession, owner_job_id) -> bool:
+    """Re-read our own job row to confirm we still own this variant.
+
+    Called as a final-status guard immediately before the READY write, for
+    the same reason as :func:`_source_asset_is_deleted`: everything below
+    that point publishes a variant devices will be served.
+
+    The case this closes is a worker that lost only its *database*
+    connection.  Its queue lease keeps renewing, so it keeps transcoding,
+    while the CMS monitor sees a frozen heartbeat, terminalises the job and
+    stages a replacement.  The heartbeat's own eviction check bounds that
+    window to one interval, but ffmpeg can still exit inside it, and the
+    checksum/probe work that follows is unbounded — long enough for the
+    replacement to be writing the same output.  Two writers, one blob.
+
+    Terminal is the test, not "some other job is active": the replacement
+    *is* active and legitimately so, so presence of an active job proves
+    nothing.  What disqualifies us is our own row having been closed out.
+    A job that has vanished entirely counts as lost too.
+    """
+    from shared.models.job import Job
+    from shared.services.jobs import _TERMINAL_JOB_STATUSES
+
+    if owner_job_id is None:
+        return False
+    result = await db.execute(select(Job.status).where(Job.id == owner_job_id))
+    status = result.scalar_one_or_none()
+    if status is None:
+        return True
+    return status in _TERMINAL_JOB_STATUSES
+
+
+async def _abort_on_lost_ownership(variant, output_path, owner_job_id) -> None:
+    """Drop partial output and leave the row to whoever owns it now."""
+    from shared.metrics import transcode_evicted_total
+
+    try:
+        if output_path.is_file():
+            output_path.unlink()
+    except Exception:
+        logger.warning(
+            "Failed to unlink %s on lost-ownership abort", output_path, exc_info=True
+        )
+    try:
+        transcode_evicted_total.add(1)
+    except Exception:
+        pass
+    logger.warning(
+        "Variant %s: job %s is no longer ours (terminalised while ffmpeg ran) "
+        "— discarding output and skipping the READY write",
+        variant.id, owner_job_id,
+    )
+
+
 async def _abort_on_deleted(variant, output_path, db: AsyncSession) -> None:
     """Cleanup partial output + leave variant un-READY when asset is gone.
 
@@ -737,7 +791,12 @@ async def _render_webpage_thumbnail(
     )
 
 
-async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Path) -> None:
+async def _transcode_one(
+    variant: AssetVariant,
+    db: AsyncSession,
+    asset_dir: Path,
+    owner_job_id=None,
+) -> None:
     """Transcode a single variant using ffmpeg."""
     await db.refresh(variant, ["source_asset", "profile"])
     source = variant.source_asset
@@ -907,6 +966,10 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                 await _abort_on_deleted(variant, output_path, db)
                 return
 
+            if await _owner_job_lost(db, owner_job_id):
+                await _abort_on_lost_ownership(variant, output_path, owner_job_id)
+                return
+
             variant.checksum = sha.hexdigest()
             variant.size_bytes = file_size
             variant.status = VariantStatus.READY
@@ -950,6 +1013,10 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             # conversion, skip the READY write and let the reaper clean up.
             if await _source_asset_is_deleted(db, variant.source_asset_id):
                 await _abort_on_deleted(variant, output_path, db)
+                return
+
+            if await _owner_job_lost(db, owner_job_id):
+                await _abort_on_lost_ownership(variant, output_path, owner_job_id)
                 return
 
             variant.checksum = sha.hexdigest()
@@ -1074,6 +1141,14 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         # transcode, skip the READY write and let the reaper clean up.
         if await _source_asset_is_deleted(db, variant.source_asset_id):
             await _abort_on_deleted(variant, output_path, db)
+            return
+
+        # Final-status guard: if this job was terminalised while ffmpeg ran
+        # (worker lost the DB but kept its queue lease), a replacement is
+        # already transcoding this variant. Writing READY here would publish
+        # a blob two processes wrote.
+        if await _owner_job_lost(db, owner_job_id):
+            await _abort_on_lost_ownership(variant, output_path, owner_job_id)
             return
 
         variant.checksum = sha.hexdigest()
@@ -1236,7 +1311,7 @@ async def process_pending(session_factory, asset_dir: Path) -> int:
 # ── Direct-dispatch helpers (used by queue-mode workers) ────────
 
 async def transcode_variant_by_id(
-    session_factory, asset_dir: Path, variant_id: uuid.UUID
+    session_factory, asset_dir: Path, variant_id: uuid.UUID, owner_job_id=None
 ) -> bool:
     """Transcode one specific variant identified by its UUID.
 
@@ -1258,7 +1333,7 @@ async def transcode_variant_by_id(
         if variant.status == VariantStatus.READY:
             logger.info("Variant %s already READY — skipping", variant_id)
             return True
-        await _transcode_one(variant, db, asset_dir)
+        await _transcode_one(variant, db, asset_dir, owner_job_id)
         # _transcode_one sets the variant to READY or FAILED internally.
         # Refresh and report success iff the final status is READY.
         await db.refresh(variant)

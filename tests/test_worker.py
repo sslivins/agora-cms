@@ -844,3 +844,121 @@ class TestCmsTranscoderShim:
         from cms.services.transcoder import convert_image_to_jpeg
         from shared.services.image import convert_image as shared_convert
         assert convert_image_to_jpeg is shared_convert
+
+class TestOwnershipGuardOnReadyWrite:
+    """An evicted worker must not publish the variant it was transcoding.
+
+    The heartbeat's eviction check bounds how long a worker can keep
+    running after its job was terminalised, but ffmpeg can still exit
+    inside that window, and the checksum/probe work that follows is
+    unbounded.  The replacement worker is transcoding the same variant to
+    the same blob path, so the READY write has to be gated on ownership,
+    not just on liveness.
+    """
+
+    @staticmethod
+    async def _setup(db_session, tmp_path, job_status):
+        from shared.models.job import Job, JobType
+
+        profile = _make_profile(db_session)
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = _make_asset(filename="photo.jpg", asset_type=AssetType.IMAGE)
+        db_session.add(asset)
+        await db_session.flush()
+
+        variant_id = uuid.uuid4()
+        variant = _make_variant(
+            asset.id, profile.id, id=variant_id, filename=f"{variant_id}.jpg",
+        )
+        db_session.add(variant)
+
+        job = Job(
+            id=uuid.uuid4(),
+            type=JobType.VARIANT_TRANSCODE,
+            target_id=variant_id,
+            status=job_status,
+        )
+        db_session.add(job)
+        await db_session.commit()
+
+        asset_dir = tmp_path / "assets"
+        asset_dir.mkdir()
+        (asset_dir / "photo.jpg").write_bytes(b"fake jpeg data")
+        return variant, job, asset_dir
+
+    @staticmethod
+    def _patches():
+        async def mock_convert(source_path, output_path, **kwargs):
+            output_path.write_bytes(b"converted image data")
+            return True
+
+        mock_storage = MagicMock()
+        mock_storage.on_file_stored = AsyncMock()
+        return mock_convert, mock_storage
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", [JobStatus.FAILED, JobStatus.CANCELLED])
+    async def test_evicted_worker_does_not_write_ready(
+        self, db_session, tmp_path, terminal
+    ):
+        from worker.transcoder import _transcode_one
+
+        variant, job, asset_dir = await self._setup(db_session, tmp_path, terminal)
+        mock_convert, mock_storage = self._patches()
+
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}), \
+             patch("worker.transcoder.get_storage", return_value=mock_storage):
+            await _transcode_one(variant, db_session, asset_dir, job.id)
+
+        await db_session.refresh(variant)
+        assert variant.status != VariantStatus.READY, (
+            "evicted worker published a variant the replacement also wrote"
+        )
+        mock_storage.on_file_stored.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_live_owner_still_writes_ready(self, db_session, tmp_path):
+        """The guard must not break the normal path."""
+        from worker.transcoder import _transcode_one
+
+        variant, job, asset_dir = await self._setup(
+            db_session, tmp_path, JobStatus.PROCESSING
+        )
+        mock_convert, mock_storage = self._patches()
+
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}), \
+             patch("worker.transcoder.get_storage", return_value=mock_storage):
+            await _transcode_one(variant, db_session, asset_dir, job.id)
+
+        await db_session.refresh(variant)
+        assert variant.status == VariantStatus.READY
+        assert variant.checksum is not None
+
+    @pytest.mark.asyncio
+    async def test_no_owner_id_is_unguarded(self, db_session, tmp_path):
+        """Callers that pass no job id (legacy paths) are unaffected."""
+        from worker.transcoder import _transcode_one
+
+        variant, job, asset_dir = await self._setup(
+            db_session, tmp_path, JobStatus.FAILED
+        )
+        mock_convert, mock_storage = self._patches()
+
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}), \
+             patch("worker.transcoder.get_storage", return_value=mock_storage):
+            await _transcode_one(variant, db_session, asset_dir, None)
+
+        await db_session.refresh(variant)
+        assert variant.status == VariantStatus.READY
+
+    @pytest.mark.asyncio
+    async def test_vanished_job_counts_as_lost(self, db_session, tmp_path):
+        from worker.transcoder import _owner_job_lost
+
+        assert await _owner_job_lost(db_session, uuid.uuid4()) is True
+        assert await _owner_job_lost(db_session, None) is False

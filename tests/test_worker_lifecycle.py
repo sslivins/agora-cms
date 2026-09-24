@@ -148,7 +148,7 @@ async def test_sigterm_path_marks_failed_and_deletes_message(db_engine, tmp_path
     # Patch transcode_variant_by_id so it "starts" then the SIGTERM flag is flipped
     # mid-flight, mimicking the signal handler firing. The transcoder returns False
     # (ffmpeg was killed) — same as what cancel_active_ffmpeg causes in prod.
-    async def _fake_transcode(session_factory, asset_dir, target_id):
+    async def _fake_transcode(session_factory, asset_dir, target_id, owner_job_id=None):
         wmain._sigterm_received = True
         return False
 
@@ -206,7 +206,7 @@ async def test_lease_lost_path_is_silent(db_engine, tmp_path):
     # Give transcode enough time for the heartbeat to run its first iteration
     # (which fires update_message immediately on start per the renew-first change)
     # and for lease_actually_lost to propagate before we return.
-    async def _slow_fake_transcode(session_factory, asset_dir, target_id):
+    async def _slow_fake_transcode(session_factory, asset_dir, target_id, owner_job_id=None):
         await asyncio.sleep(0.2)  # heartbeat fires update_message, fails, kills us
         return False
 
@@ -504,7 +504,7 @@ class TestEviction:
 
         recovery_msg = "no heartbeat for >120s - worker presumed dead"
 
-        async def _fake_transcode(session_factory, asset_dir, target_id):
+        async def _fake_transcode(session_factory, asset_dir, target_id, owner_job_id=None):
             # The CMS staleness monitor evicts us mid-transcode, exactly as
             # recover_stalled_variants_once does.
             async with factory() as db:
@@ -581,7 +581,7 @@ class TestEviction:
         def _fake_kill():
             killed.set()
 
-        async def _fake_transcode(session_factory, asset_dir, target_id):
+        async def _fake_transcode(session_factory, asset_dir, target_id, owner_job_id=None):
             async with factory() as db:
                 await db.execute(
                     _sa_update(Job)
@@ -653,7 +653,7 @@ class TestEviction:
 
         killed = MagicMock()
 
-        async def _fake_transcode(session_factory, asset_dir, target_id):
+        async def _fake_transcode(session_factory, asset_dir, target_id, owner_job_id=None):
             # Give the heartbeat task room to run at least once mid-transcode.
             await asyncio.sleep(0.2)
             return True
