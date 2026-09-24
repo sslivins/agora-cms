@@ -700,6 +700,22 @@ async def recover_stalled_variants_once(db: AsyncSession) -> list[uuid.UUID]:
         )
         .order_by(Job.created_at)
         .limit(_STALE_RESET_BATCH)
+        # Lock the job rows we are about to terminalise, and skip any that
+        # another session already holds.
+        #
+        # Without this the SELECT and the UPDATE are a check-then-act with no
+        # re-validation: a worker whose heartbeat lands in that window is
+        # evicted on the strength of an observation that was already stale
+        # when we acted on it.  Postgres re-evaluates the WHERE clause after
+        # acquiring each lock, so a row that stopped qualifying is dropped
+        # rather than terminalised.
+        #
+        # SKIP LOCKED rather than waiting: a row whose lock is currently held
+        # is being written by someone else *right now*, which is the single
+        # clearest evidence we have that its worker is alive.  Skipping costs
+        # us one tick; blocking would hold this transaction open behind a
+        # worker's commit and delay every other candidate in the batch.
+        .with_for_update(skip_locked=True, of=Job)
     )
     rows = result.all()
     if not rows:

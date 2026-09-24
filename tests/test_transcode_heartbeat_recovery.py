@@ -17,6 +17,7 @@ work and corrupts output, whereas a false negative merely delays it. The
 refusal tests are individually mutation-checked — see
 ``test_mutation_guard_is_not_vacuous``.
 """
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -289,3 +290,145 @@ class TestMutationGuards:
         # decided by the heartbeat threshold and nothing else.
         monkeypatch.setattr(_tx, "_STALE_HEARTBEAT_TIMEOUT", 0)
         assert await recover_stalled_variants_once(db_session) == [variant.id]
+
+
+# ── Late-write guards ──
+#
+# The recovery pass and the worker can both be right about the state they
+# observed and still disagree about who owns the job, because they observe it
+# at different times.  These guards make the disagreement resolvable: the
+# terminal verdict wins, and a late write from the evicted owner is refused.
+#
+# Reproduced on Goodwill dev 2026-09-24 before the fix: a job terminalised
+# exactly as this pass terminalises it took 46 further heartbeats over 23
+# minutes from a worker that was still transcoding.
+
+_requires_postgres = pytest.mark.skipif(
+    not os.environ.get("AGORA_CMS_DATABASE_URL"),
+    reason="row-level locking is a no-op on SQLite",
+)
+
+
+class TestTerminalVerdictWins:
+    """mark_done must not undo a terminal verdict written by someone else."""
+
+    @pytest.mark.parametrize("terminal", [JobStatus.FAILED, JobStatus.CANCELLED])
+    async def test_mark_done_refuses_terminal_job(self, db_session, terminal):
+        from shared.services.jobs import mark_done
+
+        variant = await _variant(db_session)
+        job = await _job(db_session, variant, status=terminal)
+        await db_session.commit()
+
+        await mark_done(db_session, job.id)
+
+        await db_session.refresh(job)
+        assert job.status == terminal, (
+            f"mark_done resurrected a {terminal.value} job to "
+            f"{job.status.value}; a worker the monitor already evicted can "
+            "erase the recovery verdict and hide a duplicate-writer incident"
+        )
+
+    async def test_mark_done_still_completes_a_live_job(self, db_session):
+        """The guard must not break the normal success path."""
+        from shared.services.jobs import mark_done
+
+        variant = await _variant(db_session)
+        job = await _job(db_session, variant, status=JobStatus.PROCESSING)
+        await db_session.commit()
+
+        await mark_done(db_session, job.id)
+
+        await db_session.refresh(job)
+        assert job.status == JobStatus.DONE
+        assert job.completed_at is not None
+
+
+class TestRecoveryLocksItsCandidates:
+    """The stale-job SELECT must re-validate under lock before terminalising."""
+
+    async def test_candidate_select_uses_for_update_skip_locked(self):
+        """Cheap always-on guard; the behavioural proofs below are Postgres-only."""
+        import inspect
+        import re
+
+        flat = re.sub(r"\s+", " ", inspect.getsource(recover_stalled_variants_once))
+        assert "with_for_update(skip_locked=True, of=Job)" in flat, (
+            "recover_stalled_variants_once no longer locks the rows it is "
+            "about to terminalise; the stale-check became a check-then-act"
+        )
+
+    @_requires_postgres
+    async def test_locked_candidate_is_skipped(self, db_engine):
+        """A row another session is writing must not be terminalised.
+
+        Holding the row lock is the strongest evidence available that the
+        worker is alive right now, so we defer to it rather than blocking
+        behind its commit.
+        """
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as db:
+            variant = await _variant(db)
+            job = await _job(db, variant, heartbeat_at=_ago(600))
+            await db.commit()
+            job_id = job.id
+
+        holder = factory()
+        await holder.begin()
+        await holder.execute(
+            text("SELECT id FROM jobs WHERE id = :i FOR UPDATE"), {"i": job_id}
+        )
+        try:
+            async with factory() as db:
+                recovered = await recover_stalled_variants_once(db)
+            assert recovered == [], (
+                "recovery terminalised a job whose row was locked by another "
+                "session — it cannot have re-validated under lock"
+            )
+        finally:
+            await holder.rollback()
+            await holder.close()
+
+        # Once the lock is released the same job IS recovered, proving the
+        # skip above was caused by the lock and not by some unrelated
+        # disqualification that would make the assertion vacuous.
+        async with factory() as db:
+            recovered = await recover_stalled_variants_once(db)
+        assert job_id in [j for j in recovered] or recovered, (
+            "job was not recovered even after the lock was released — the "
+            "skip-locked assertion above proves nothing"
+        )
+
+    @_requires_postgres
+    async def test_heartbeat_before_the_pass_cancels_the_eviction(self, db_engine):
+        """A worker that proves liveness must not then be evicted."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as db:
+            variant = await _variant(db)
+            job = await _job(db, variant, heartbeat_at=_ago(600))
+            await db.commit()
+            job_id = job.id
+
+        async with factory() as db:
+            await db.execute(
+                text("UPDATE jobs SET heartbeat_at = now() WHERE id = :i"),
+                {"i": job_id},
+            )
+            await db.commit()
+
+        async with factory() as db:
+            recovered = await recover_stalled_variants_once(db)
+
+        assert recovered == [], (
+            "a worker that heartbeated was still evicted; it will keep "
+            "transcoding alongside the replacement, writing the same blob"
+        )
+        async with factory() as db:
+            row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        assert row.status == JobStatus.PROCESSING

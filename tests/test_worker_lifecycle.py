@@ -464,3 +464,230 @@ async def test_listen_mode_survives_transient_db_error(monkeypatch, caplog):
         "iteration failed" in rec.getMessage().lower()
         for rec in caplog.records
     ), "transient failure was not logged"
+
+
+# ── Eviction: CMS terminalised the job while this worker was still running it ──
+#
+# Reproduces a live dev incident (2026-09-24).  A worker that loses only its
+# *database* connection for longer than the staleness threshold keeps renewing
+# its queue lease and keeps transcoding, while the CMS staleness monitor —
+# which sees a frozen heartbeat — terminalises its job and stages a
+# replacement.  Both then write the same output blob.
+#
+# Measured before the fix: 23 heartbeats landed on a FAILED job over 6 minutes
+# and the worker was still transcoding 20 minutes after eviction.
+
+class TestEviction:
+    """The evicted worker must notice, stop, and never resurrect its job."""
+
+    @_requires_azure_queue
+    @pytest.mark.asyncio
+    async def test_evicted_worker_does_not_resurrect_its_job(
+        self, db_engine, tmp_path, monkeypatch
+    ):
+        """A worker that completes after eviction must NOT flip FAILED -> DONE.
+
+        This is the backstop for the window between the monitor's commit and
+        the worker's next heartbeat: the worker finishes its obsolete
+        transcode and calls mark_done.  Before the fix that overwrote the
+        recovery verdict, presenting a variant written by two concurrent
+        workers as a clean success.
+        """
+        from sqlalchemy import update as _sa_update
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as db:
+            job_id, variant_id = await _seed_asset_variant_job(db)
+
+        import worker.__main__ as wmain
+        wmain._sigterm_received = False
+
+        recovery_msg = "no heartbeat for >120s - worker presumed dead"
+
+        async def _fake_transcode(session_factory, asset_dir, target_id):
+            # The CMS staleness monitor evicts us mid-transcode, exactly as
+            # recover_stalled_variants_once does.
+            async with factory() as db:
+                await db.execute(
+                    _sa_update(Job)
+                    .where(Job.id == job_id)
+                    .values(
+                        status=JobStatus.FAILED,
+                        error_message=recovery_msg,
+                    )
+                )
+                await db.commit()
+            # ...and we finish anyway, unaware.
+            return True
+
+        queue_msg = _make_queue_msg(str(job_id))
+        queue_client = _make_queue_client()
+
+        settings = MagicMock()
+        settings.asset_storage_path = tmp_path / "assets"
+        settings.asset_storage_path.mkdir()
+        settings.azure_storage_connection_string = (
+            "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=y;"
+            "EndpointSuffix=core.windows.net"
+        )
+
+        with patch("worker.__main__.get_session_factory", return_value=factory), \
+             patch("worker.transcoder.transcode_variant_by_id",
+                   new=AsyncMock(side_effect=_fake_transcode)), \
+             patch("worker.transcoder.capture_stream_by_id",
+                   new=AsyncMock(return_value=False)), \
+             patch("azure.storage.queue.QueueClient.from_connection_string",
+                   return_value=queue_client):
+            queue_client.receive_message.return_value = queue_msg
+            await wmain._queue_mode(settings)
+
+        async with factory() as db:
+            job_row = (
+                await db.execute(select(Job).where(Job.id == job_id))
+            ).scalar_one()
+
+        assert job_row.status == JobStatus.FAILED, (
+            f"evicted worker resurrected its job to {job_row.status.value}; "
+            "the CMS had already staged a replacement for this variant, so "
+            "this hides a duplicate-writer incident as a clean success"
+        )
+        assert job_row.error_message == recovery_msg, (
+            "the recovery verdict was overwritten by the evicted worker"
+        )
+
+    @_requires_azure_queue
+    @pytest.mark.asyncio
+    async def test_evicted_worker_kills_ffmpeg_and_drops_the_message(
+        self, db_engine, tmp_path, monkeypatch
+    ):
+        """The heartbeat must detect eviction and stop the doomed transcode.
+
+        This is the primary guard.  The heartbeat UPDATE carries a
+        ``status == PROCESSING`` predicate, so once the monitor terminalises
+        the row the stamp matches zero rows -- the only in-band signal the
+        worker has that it no longer owns the job.
+        """
+        from sqlalchemy import update as _sa_update
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as db:
+            job_id, variant_id = await _seed_asset_variant_job(db)
+
+        import worker.__main__ as wmain
+        wmain._sigterm_received = False
+
+        killed = asyncio.Event()
+
+        def _fake_kill():
+            killed.set()
+
+        async def _fake_transcode(session_factory, asset_dir, target_id):
+            async with factory() as db:
+                await db.execute(
+                    _sa_update(Job)
+                    .where(Job.id == job_id)
+                    .values(
+                        status=JobStatus.FAILED,
+                        error_message="no heartbeat for >120s - worker presumed dead",
+                    )
+                )
+                await db.commit()
+            # Keep "transcoding" until the heartbeat notices we were evicted.
+            # HEARTBEAT_INTERVAL is 15s, so allow a generous margin.
+            try:
+                await asyncio.wait_for(killed.wait(), timeout=40)
+            except asyncio.TimeoutError:
+                pass
+            return False
+
+        queue_msg = _make_queue_msg(str(job_id))
+        queue_client = _make_queue_client()
+
+        settings = MagicMock()
+        settings.asset_storage_path = tmp_path / "assets"
+        settings.asset_storage_path.mkdir()
+        settings.azure_storage_connection_string = (
+            "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=y;"
+            "EndpointSuffix=core.windows.net"
+        )
+
+        with patch("worker.__main__.get_session_factory", return_value=factory), \
+             patch("worker.transcoder.cancel_active_ffmpeg", new=_fake_kill), \
+             patch("worker.transcoder.transcode_variant_by_id",
+                   new=AsyncMock(side_effect=_fake_transcode)), \
+             patch("worker.transcoder.capture_stream_by_id",
+                   new=AsyncMock(return_value=False)), \
+             patch("azure.storage.queue.QueueClient.from_connection_string",
+                   return_value=queue_client):
+            queue_client.receive_message.return_value = queue_msg
+            await wmain._queue_mode(settings)
+
+        assert killed.is_set(), (
+            "heartbeat did not detect eviction within 40s -- the evicted "
+            "worker kept transcoding alongside its replacement, which is the "
+            "duplicate-writer bug this guard exists to prevent"
+        )
+        assert queue_client.delete_message.called, (
+            "evicted worker left its obsolete message on the queue; "
+            "redelivery would resurrect the terminalised job via claim_job"
+        )
+    @_requires_azure_queue
+    @pytest.mark.asyncio
+    async def test_normal_transcode_is_not_falsely_evicted(
+        self, db_engine, tmp_path, monkeypatch
+    ):
+        """The eviction check must not fire on a healthy job.
+
+        The heartbeat task is started deliberately *before* claim_job, so its
+        first stamp can land while the row is still PENDING.  A predicate that
+        only accepts PROCESSING would read that as an eviction and kill every
+        transcode at startup — a far worse failure than the one being fixed,
+        and one that would surface as an intermittent "worker does nothing".
+        """
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as db:
+            job_id, variant_id = await _seed_asset_variant_job(db)
+
+        import worker.__main__ as wmain
+        wmain._sigterm_received = False
+
+        killed = MagicMock()
+
+        async def _fake_transcode(session_factory, asset_dir, target_id):
+            # Give the heartbeat task room to run at least once mid-transcode.
+            await asyncio.sleep(0.2)
+            return True
+
+        queue_msg = _make_queue_msg(str(job_id))
+        queue_client = _make_queue_client()
+
+        settings = MagicMock()
+        settings.asset_storage_path = tmp_path / "assets"
+        settings.asset_storage_path.mkdir()
+        settings.azure_storage_connection_string = (
+            "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=y;"
+            "EndpointSuffix=core.windows.net"
+        )
+
+        with patch("worker.__main__.get_session_factory", return_value=factory), \
+             patch("worker.transcoder.cancel_active_ffmpeg", new=killed), \
+             patch("worker.transcoder.transcode_variant_by_id",
+                   new=AsyncMock(side_effect=_fake_transcode)), \
+             patch("worker.transcoder.capture_stream_by_id",
+                   new=AsyncMock(return_value=False)), \
+             patch("azure.storage.queue.QueueClient.from_connection_string",
+                   return_value=queue_client):
+            queue_client.receive_message.return_value = queue_msg
+            await wmain._queue_mode(settings)
+
+        assert not killed.called, (
+            "healthy transcode was killed by the eviction check — the "
+            "heartbeat predicate rejects a legitimate pre-claim job state"
+        )
+        async with factory() as db:
+            job_row = (
+                await db.execute(select(Job).where(Job.id == job_id))
+            ).scalar_one()
+        assert job_row.status == JobStatus.DONE, (
+            f"healthy transcode ended {job_row.status.value}, not DONE"
+        )

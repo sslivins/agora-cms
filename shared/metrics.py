@@ -173,3 +173,29 @@ asset_reap_failure_total: Final = _meter.create_counter(
         "so any sustained non-zero rate needs the underlying cause fixed."
     ),
 )
+
+
+# ── Transcodes abandoned because the CMS took the job away ──
+#
+# The staleness monitor terminalised this job while the worker was still
+# running it, and staged a replacement.  The worker notices when its
+# heartbeat UPDATE matches zero rows, kills ffmpeg and exits without writing.
+#
+# Deliberately NOT part of transcode_failure_total: nothing about the
+# transcode failed, and that counter is pinned to the genuine-failure
+# branches only (see tests/test_worker_transcode_failure_metric.py).
+#
+# A non-zero rate is not itself a correctness problem — the guard firing is
+# what keeps it from becoming one — but it means workers are losing their
+# *database* connection for longer than the staleness threshold while their
+# queue lease stays healthy, and each occurrence throws away a transcode's
+# worth of CPU.  Investigate the worker->Postgres path, not the transcode.
+transcode_evicted_total: Final = _meter.create_counter(
+    "agora.transcode.evicted",
+    description=(
+        "Transcodes abandoned because the CMS staleness monitor terminalised "
+        "the job while the worker was still running it. Indicates the worker "
+        "lost its DB connection for longer than the staleness threshold "
+        "while its queue lease stayed healthy."
+    ),
+)
