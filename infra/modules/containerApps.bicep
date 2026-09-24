@@ -472,7 +472,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: containerAppsEnv.id
     configuration: {
       triggerType: 'Event'
-      replicaTimeout: 7200 // 2 hour max per execution — SIGTERM handler in worker marks FAILED within 30s grace
+      replicaTimeout: 7200 // 2 hour max per execution. The worker's SIGTERM handler classifies by replica age (AGORA_WORKER_REPLICA_TIMEOUT_S, default 7200): at/near this budget it marks the job FAILED within the 30s grace; any earlier SIGTERM (scale-in, deploy, node drain) leaves the job for the CMS staleness monitor to re-stage. Keep the two values in step.
       replicaRetryLimit: 1
       eventTriggerConfig: {
         replicaCompletionCount: 1

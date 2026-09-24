@@ -199,3 +199,19 @@ transcode_evicted_total: Final = _meter.create_counter(
         "while its queue lease stayed healthy."
     ),
 )
+
+# Raised when the worker is shut down by a SIGTERM that is *not* the Container
+# App Jobs `replicaTimeout` — KEDA scale-in, a revision rollout, a node drain,
+# or a spot eviction.  Unlike a genuine timeout this says nothing about the
+# transcode itself, so the work is left for the CMS staleness monitor to
+# re-stage rather than being failed.  A steady non-zero rate is normal during
+# deploys; a high rate outside deploys points at aggressive scale-in thrashing
+# and means transcodes are repeatedly restarting from zero.
+transcode_interrupted_total: Final = _meter.create_counter(
+    "agora.transcode.interrupted",
+    description=(
+        "Transcodes abandoned because the worker replica was shut down for a "
+        "reason unrelated to the transcode (scale-in, deploy, node drain). "
+        "The job is left for the staleness monitor to re-stage."
+    ),
+)

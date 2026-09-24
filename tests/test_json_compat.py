@@ -18,6 +18,15 @@ from cms.services.json_compat import json_as_text
 # that need to build a Postgres-dialect engine when it's not installed —
 # the SQLite variants still run and give us the portability regression
 # guard we care about.
+#
+# The engine URL below names ``psycopg2`` explicitly rather than relying on
+# the bare ``postgresql://`` default, because SQLAlchemy 2.1 changed that
+# default from psycopg2 to psycopg (v3).  With a bare URL this probe would
+# pass on psycopg2 while ``create_engine`` went looking for psycopg3, so the
+# skip guard silently stopped guarding anything and the tests failed with
+# ``ModuleNotFoundError: No module named 'psycopg'``.
+_PG_DIALECT_URL = "postgresql+psycopg2://"
+
 try:  # pragma: no cover — trivial import probe
     import psycopg2  # noqa: F401
     _HAS_PSYCOPG2 = True
@@ -52,7 +61,7 @@ def _compile(dialect_url: str, stmt) -> str:
 @_requires_psycopg2
 def test_compiles_to_arrow_arrow_on_postgres():
     stmt = select(json_as_text(_Row.details, "actor_username"))
-    sql = _compile("postgresql://", stmt)
+    sql = _compile(_PG_DIALECT_URL, stmt)
     # Postgres idiom: col ->> 'key'
     assert "->>" in sql
     assert "actor_username" in sql
@@ -84,5 +93,5 @@ def test_usable_in_where_and_distinct():
         .where(expr == "alice")
     )
     # And compile on both dialects.
-    _compile("postgresql://", stmt)
+    _compile(_PG_DIALECT_URL, stmt)
     _compile("sqlite:///:memory:", stmt)
