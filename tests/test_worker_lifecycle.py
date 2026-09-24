@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -129,10 +130,15 @@ async def _seed_asset_variant_job(db_session):
 @_requires_azure_queue
 @pytest.mark.asyncio
 async def test_sigterm_path_marks_failed_and_deletes_message(db_engine, tmp_path, monkeypatch):
-    """On SIGTERM (replicaTimeout), worker marks variant+job FAILED and deletes the queue msg.
+    """On a SIGTERM that really is `replicaTimeout`, the worker marks
+    variant+job FAILED and deletes the queue msg.
 
     Guarantees: the doomed transcode does NOT retry (queue msg gone) and the user
     sees a plain-English error in the UI.
+
+    Note the replica has to be made *old* for this to be the timeout path at
+    all — a young replica taking SIGTERM is a scale-in/deploy and is covered by
+    ``test_sigterm_on_young_replica_leaves_job_for_recovery`` below.
     """
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as db:
@@ -144,6 +150,14 @@ async def test_sigterm_path_marks_failed_and_deletes_message(db_engine, tmp_path
     # Reset the module-level flag between tests (it's a global).
     import worker.__main__ as wmain
     wmain._sigterm_received = False
+
+    # Age the replica past the timeout margin so the SIGTERM classifies as a
+    # genuine replicaTimeout rather than a shutdown.
+    monkeypatch.setattr(
+        wmain,
+        "_PROCESS_STARTED_MONOTONIC",
+        time.monotonic() - wmain._REPLICA_TIMEOUT_S,
+    )
 
     # Patch transcode_variant_by_id so it "starts" then the SIGTERM flag is flipped
     # mid-flight, mimicking the signal handler firing. The transcoder returns False
@@ -181,6 +195,106 @@ async def test_sigterm_path_marks_failed_and_deletes_message(db_engine, tmp_path
 
     # Queue message must be deleted — no retry budget consumed
     assert queue_client.delete_message.called, "SIGTERM path must delete the queue message"
+
+
+def test_replica_timeout_classifier_boundaries(monkeypatch) -> None:
+    """The age-based classifier is the whole fix, so pin its boundaries.
+
+    Erring towards "shutdown" is deliberate: misclassifying a genuine timeout
+    costs one wasted retry, while misclassifying a shutdown destroys work and
+    reports an error that is simply untrue.
+    """
+    import worker.__main__ as wmain
+
+    def _with_uptime(seconds: float) -> bool:
+        monkeypatch.setattr(
+            wmain, "_PROCESS_STARTED_MONOTONIC", time.monotonic() - seconds
+        )
+        return wmain._sigterm_is_replica_timeout()
+
+    assert _with_uptime(5) is False, "a 5s-old replica cannot have timed out"
+    assert _with_uptime(60) is False
+    assert _with_uptime(wmain._REPLICA_TIMEOUT_S / 2) is False, (
+        "half-way through the budget is still a shutdown, not a timeout"
+    )
+    # Just inside the margin — treated as a real timeout.
+    assert _with_uptime(
+        wmain._REPLICA_TIMEOUT_S - wmain._REPLICA_TIMEOUT_MARGIN_S + 1
+    ) is True
+    assert _with_uptime(wmain._REPLICA_TIMEOUT_S) is True
+    assert _with_uptime(wmain._REPLICA_TIMEOUT_S + 600) is True
+
+
+@_requires_azure_queue
+@pytest.mark.asyncio
+async def test_sigterm_on_young_replica_leaves_job_for_recovery(db_engine, tmp_path):
+    """A SIGTERM on a *young* replica is a shutdown, not a timeout.
+
+    Scale-in, a revision rollout, a node drain and a spot eviction all arrive
+    as SIGTERM, and none of them says anything about the transcode.  Treating
+    them as `replicaTimeout` permanently destroyed in-flight work on every
+    deploy and reported "Transcode exceeded the 2 hour time limit." for jobs
+    that had been running for under a minute — found on Goodwill dev by killing
+    a worker that was demonstrably mid-transcode.
+
+    The correct behaviour is to look exactly like a SIGKILL: leave the rows
+    PROCESSING with a frozen heartbeat so the CMS staleness monitor re-stages
+    the work, and drop the queue message so a redelivery cannot resurrect a
+    row the monitor has since terminalised.
+    """
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as db:
+        job_id, variant_id = await _seed_asset_variant_job(db)
+
+    queue_msg = _make_queue_msg(str(job_id))
+    queue_client = _make_queue_client()
+
+    import worker.__main__ as wmain
+    wmain._sigterm_received = False
+    # No monkeypatching of _PROCESS_STARTED_MONOTONIC here: the replica is
+    # genuinely seconds old, which is the whole point of the test.
+
+    async def _fake_transcode(session_factory, asset_dir, target_id, owner_job_id=None):
+        wmain._sigterm_received = True
+        return False
+
+    settings = MagicMock()
+    settings.asset_storage_path = tmp_path / "assets"
+    settings.asset_storage_path.mkdir()
+    settings.azure_storage_connection_string = "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=y;EndpointSuffix=core.windows.net"
+
+    with patch("worker.__main__.get_session_factory", return_value=factory), \
+         patch("worker.transcoder.transcode_variant_by_id", new=AsyncMock(side_effect=_fake_transcode)), \
+         patch("worker.transcoder.capture_stream_by_id", new=AsyncMock(return_value=False)), \
+         patch("azure.storage.queue.QueueClient.from_connection_string", return_value=queue_client):
+        queue_client.receive_message.return_value = queue_msg
+        try:
+            await wmain._queue_mode(settings)
+        finally:
+            wmain._sigterm_received = False
+
+    async with factory() as db:
+        job_row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        variant_row = (await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id)
+        )).scalar_one()
+
+    # Left mid-flight for the staleness monitor — NOT terminalised here.
+    assert job_row.status == JobStatus.PROCESSING, (
+        "a shutdown SIGTERM must leave the job PROCESSING for the staleness "
+        "monitor to re-stage, not terminalise it"
+    )
+    assert variant_row.status != VariantStatus.FAILED
+
+    # And above all: no false timeout claim on either row.
+    assert "2 hour" not in (job_row.error_message or "")
+    assert "2 hour" not in (variant_row.error_message or "")
+
+    # The queue message still goes, so a redelivery cannot flip a
+    # monitor-terminalised row back to PROCESSING via claim_job.
+    assert queue_client.delete_message.called, (
+        "interrupted path must still delete the queue message"
+    )
 
 
 @_requires_azure_queue

@@ -14,8 +14,11 @@ Two modes controlled by AGORA_WORKER_MODE (or AGORA_CMS_WORKER_MODE):
 
 import asyncio
 import logging
+import os
 import signal
 import sys
+import time
+from typing import Final
 
 from worker.config import WorkerSettings
 from worker.transcoder import process_captures, process_pending, recover_interrupted
@@ -37,11 +40,51 @@ logging.basicConfig(
 logger = logging.getLogger("agora.worker")
 
 # Module-level flag flipped by the SIGTERM handler installed in _queue_mode.
-# When True, the finalize path marks the job FAILED with a user-facing
-# "exceeded 2 hour limit" message and deletes the queue message — so a
-# replica-timeout (Container App Jobs `replicaTimeout`) becomes a terminal
-# failure rather than burning retries on a doomed transcode.
+# A SIGTERM on its own says nothing about *why* we are being shut down, so the
+# finalize path classifies it by how long this replica has been alive (see
+# ``_sigterm_is_replica_timeout``): a genuine Container App Jobs
+# ``replicaTimeout`` becomes a terminal failure, while any other shutdown
+# leaves the job for the staleness monitor to re-stage.
 _sigterm_received: bool = False
+
+# When this process started, used to tell a genuine ``replicaTimeout`` apart
+# from every other source of SIGTERM.  Monotonic so a clock adjustment mid-run
+# cannot make a young replica look like an expired one.
+_PROCESS_STARTED_MONOTONIC: Final[float] = time.monotonic()
+
+# Container App Jobs `replicaTimeout` for the worker job, in seconds.  Must
+# track the value in infra (`replicaTimeout: 7200`); overridable so the two can
+# be kept in step without a code change.
+_REPLICA_TIMEOUT_S: Final[float] = float(
+    os.environ.get("AGORA_WORKER_REPLICA_TIMEOUT_S", "7200")
+)
+
+# How close to `replicaTimeout` a replica must be before we believe a SIGTERM
+# really is the platform reclaiming an over-budget transcode.  Generous on
+# purpose: misclassifying a genuine timeout as a shutdown costs one wasted
+# retry, while misclassifying a shutdown as a timeout permanently destroys work
+# and reports a flatly untrue error to the user.
+_REPLICA_TIMEOUT_MARGIN_S: Final[float] = 300.0
+
+
+def _sigterm_is_replica_timeout() -> bool:
+    """Is this SIGTERM the platform reclaiming an over-budget transcode?
+
+    SIGTERM reaches the worker from several sources, and they call for
+    opposite responses:
+
+    * **`replicaTimeout`** — the transcode genuinely exhausted its budget.
+      Retrying is guaranteed to hit the same wall, so fail it terminally.
+    * **Scale-in / deploy / node drain / spot eviction** — the transcode was
+      making perfectly good progress and merely lost its host.  It deserves to
+      be re-run, and calling it a timeout is simply false.
+
+    The platform gives us no way to ask which one it was, so infer it from the
+    replica's own age: only a replica that has been alive for nearly the whole
+    `replicaTimeout` budget can plausibly have hit it.
+    """
+    uptime = time.monotonic() - _PROCESS_STARTED_MONOTONIC
+    return uptime >= (_REPLICA_TIMEOUT_S - _REPLICA_TIMEOUT_MARGIN_S)
 
 
 async def _listen_mode(settings: WorkerSettings) -> None:
@@ -330,17 +373,19 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     lease_actually_lost = False    # set by heartbeat when update_message fails
     job_evicted = False            # set by heartbeat when the Job row left PROCESSING
 
-    # SIGTERM handler — installed before any real work begins.  If the pod
-    # hits Container App Jobs `replicaTimeout` we get ~30s of grace before
-    # SIGKILL.  Flip the module-level flag, stop the heartbeat, and kill
-    # ffmpeg so the main flow unwinds into the finalize path and writes
-    # FAILED + deletes the queue message within the grace window.
+    # SIGTERM handler — installed before any real work begins.  Covers both the
+    # Container App Jobs `replicaTimeout` (~30s of grace before SIGKILL) and
+    # every other shutdown: scale-in, deploy, node drain.  Flip the
+    # module-level flag, stop the heartbeat, and kill ffmpeg so the main flow
+    # unwinds into the finalize path, which decides from the replica's age
+    # whether this was a real timeout or just a lost host.
     def _on_sigterm():
         global _sigterm_received
         _sigterm_received = True
         logger.warning(
-            "Worker SIGTERM received — marking job %s as failed (replica timeout)",
+            "Worker SIGTERM received — unwinding job %s (timeout=%s)",
             job_id,
+            _sigterm_is_replica_timeout(),
         )
         lease_lost.set()
         try:
@@ -722,8 +767,48 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     # Order matters: SIGTERM and lease-loss take precedence over the
     # normal success/cancel/fail classification, because they indicate
     # the worker's runtime contract is broken.
-    if _sigterm_received:
-        # Replica timeout — terminal.  Mark variant + job FAILED with a
+    if _sigterm_received and not _sigterm_is_replica_timeout():
+        # Shut down for a reason that has nothing to do with this transcode —
+        # KEDA scale-in, a revision rollout, a node drain, a spot eviction.
+        # The work was progressing fine and deserves to be re-run, so treat
+        # this exactly as if the replica had been SIGKILLed: leave the Job and
+        # AssetVariant rows PROCESSING with a now-frozen heartbeat, and let the
+        # CMS staleness monitor terminalise the job and stage a replacement in
+        # its usual single transaction.
+        #
+        # Deliberately *not* doing the two obvious-looking alternatives:
+        #
+        #   * Failing the job here.  That is the bug this branch exists to fix
+        #     — every deploy permanently destroyed whatever was mid-transcode
+        #     and blamed it on a 2 hour limit the transcode never came close
+        #     to, which is both a real outage and a false trail for whoever
+        #     investigates it.
+        #   * Leaving the queue message to redeliver.  ``claim_job`` only
+        #     refuses DONE jobs, so once the monitor has terminalised this row
+        #     a redelivered message would flip it from FAILED straight back to
+        #     PROCESSING — a second active job for a variant that already has a
+        #     replacement, which ``uq_jobs_one_active_per_variant`` then
+        #     refuses forever.  Deleting it is what the ``job_evicted`` branch
+        #     below does, for the same reason.
+        logger.warning(
+            "Job %s: replica shut down after %.0fs (replicaTimeout=%.0fs) — "
+            "not a timeout; leaving the job for the staleness monitor to "
+            "re-stage",
+            job_id,
+            time.monotonic() - _PROCESS_STARTED_MONOTONIC,
+            _REPLICA_TIMEOUT_S,
+        )
+        try:
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
+        except Exception:
+            logger.warning(
+                "Job %s interrupted but queue delete failed", job_id, exc_info=True
+            )
+        metrics.transcode_interrupted_total.add(
+            1, {metrics.ATTR_JOB_TYPE: job.type.value}
+        )
+    elif _sigterm_received:
+        # Genuine replica timeout — terminal.  Mark variant + job FAILED with a
         # user-facing message and delete the queue msg so nothing retries.
         # Retries of a transcode that already exceeded the time budget are
         # guaranteed to hit the same wall; don't burn more CPU.
