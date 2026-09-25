@@ -66,14 +66,31 @@ param azureOpenAIChatModelVersion = '2024-11-20'
 param azureOpenAIChatCapacity = 30
 
 // ── Voice Announcements backend (Azure AI Speech) ──
-// Prod opts in here.  westus (not the RG's westus2) for the same
-// reason as AOAI above: voice/model availability is broader there,
-// and it keeps dev + prod Speech in one region for quota tracking.
-// Enabling this creates a billable S0 Speech account on the next
-// deploy, plus two 'Cognitive Services Speech User' role assignments
-// (CMS + worker managed identities) which require the deploy to run
-// with deployRoleAssignments=true and an identity holding Owner/UAA.
-param deployAzureSpeech = true
+// DISABLED until the RBAC prerequisite is met — do not flip to true
+// on its own.
+//
+// The CMS authenticates to Speech with DefaultAzureCredential (token
+// auth, no key fallback — cms/services/speech_client.py), but
+// speech_client.is_available() only checks that the endpoint and
+// region env vars are set.  main.bicep wires those in as soon as the
+// account exists (:324-325).  So deploying the account WITHOUT the
+// two 'Cognitive Services Speech User' role assignments would flip
+// Voice Announcements "on" in the UI and then fail every synthesis
+// with 401 — visibly broken for real users, which is worse than the
+// current clean "unavailable in this environment".
+//
+// Those role assignments (main.bicep:359,369) require the deploy to
+// run with deployRoleAssignments=true, and the CI service principal
+// (467c85fe-…) holds only Contributor on agoragw-cms-rg — it cannot
+// create role assignments.  Enabling is therefore a two-part change:
+//   1. An Owner grants the CI SP 'Role Based Access Control
+//      Administrator' on agoragw-cms-rg (one time).
+//   2. Flip this to true and dispatch Deploy Goodwill with
+//      deployRoleAssignments=true.
+// Dev already has both grants, which is why voice works there.
+//
+// Enabling also provisions a billable S0 Speech account.
+param deployAzureSpeech = false
 param azureSpeechRegion = 'westus'
 param azureSpeechSku = 'S0'
 
