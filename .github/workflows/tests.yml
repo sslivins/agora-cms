@@ -295,6 +295,32 @@ jobs:
             exit 1
           fi
 
+  mcp-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Regenerate docs/mcp-coverage.md
+        run: python scripts/generate_mcp_coverage.py
+
+      - name: Verify MCP coverage manifest is in sync with code
+        run: |
+          if ! git diff --exit-code docs/mcp-coverage.md; then
+            echo "::error::docs/mcp-coverage.md is out of sync with the API routes or MCP tools."
+            echo "::error::Run 'python scripts/generate_mcp_coverage.py' and commit the result."
+            echo "::error::New routes appear as uncovered ('—') rows. That may be fine — but"
+            echo "::error::decide deliberately whether the Assistant should expose them via mcp/server.py."
+            exit 1
+          fi
+
   e2e:
     needs: changes
     if: needs.changes.outputs.code == 'true'

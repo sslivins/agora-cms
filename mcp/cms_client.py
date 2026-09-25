@@ -135,6 +135,20 @@ class CMSClient:
     async def create_webpage_asset(self, data: dict) -> dict:
         return await self._post("/api/assets/webpage", json=data)
 
+    # ── Voice announcements ──
+
+    async def list_voices(self) -> dict:
+        return await self._get("/api/voice-announcements/voices")
+
+    async def create_voice_announcement(self, data: dict) -> dict:
+        return await self._post("/api/voice-announcements", json=data)
+
+    async def get_voice_announcement_status(self, asset_id: str) -> dict:
+        return await self._get(f"/api/voice-announcements/{asset_id}")
+
+    async def update_voice_announcement(self, asset_id: str, data: dict) -> dict:
+        return await self._put(f"/api/voice-announcements/{asset_id}", json=data)
+
     # ── Composed slides (AI editor) ──
 
     async def list_composed_widget_types(self) -> dict:

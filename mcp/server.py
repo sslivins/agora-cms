@@ -62,6 +62,10 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "get_asset": "assets:read",
     "delete_asset": "assets:write",
     "create_webpage_asset": "assets:write",
+    "list_voices": "assets:read",
+    "create_voice_announcement": "assets:write",
+    "get_voice_announcement_status": "assets:read",
+    "update_voice_announcement": "assets:write",
     "list_schedules": "schedules:read",
     "get_schedule": "schedules:read",
     "create_schedule": "schedules:write",
@@ -411,6 +415,136 @@ async def create_webpage_asset(
     if group_id:
         data["group_id"] = group_id
     result = await _call_api("create_webpage_asset", data)
+    return _json_result(result)
+
+
+# ── Voice announcements ──
+
+
+@mcp.tool()
+async def list_voices() -> str:
+    """List the text-to-speech voices available for voice announcements.
+
+    Returns the voice catalogue, each entry carrying a ``short_name`` (the
+    value to pass as ``voice_name`` when creating an announcement), a
+    human-readable ``display_name``, its ``locale``, and the ``emotions`` that
+    voice supports.
+
+    If ``available`` is false, Azure Speech is not configured on this CMS and
+    voice announcements cannot be created; ``message`` explains why.
+    """
+    if err := _check_permission("list_voices"):
+        return err
+    result = await _call_api("list_voices")
+    return _json_result(result)
+
+
+@mcp.tool()
+async def create_voice_announcement(
+    display_name: str,
+    script_text: str,
+    voice_name: str,
+    language: str = "en-US",
+    emotion: str | None = None,
+    speech_rate: str | None = None,
+) -> str:
+    """Create a voice announcement asset from a script using text-to-speech.
+
+    Synthesis runs in the background and typically takes 30-60 seconds. This
+    returns as soon as the job is queued, with the new ``asset_id`` and a
+    ``generation_status``. Poll ``get_voice_announcement_status`` with that
+    ``asset_id`` until the status is DONE (or FAILED).
+
+    Call ``list_voices`` first to pick a valid ``voice_name`` and to confirm
+    the feature is available on this CMS.
+
+    Args:
+        display_name: Name for the resulting asset in the media library.
+        script_text: The text to speak.
+        voice_name: A ``short_name`` from ``list_voices`` (e.g. "en-US-Ethan:MAI-Voice-2").
+        language: BCP-47 language tag for the script. Defaults to "en-US".
+        emotion: Optional speaking style, valid only if listed for that voice.
+        speech_rate: Optional rate adjustment (e.g. "-10%", "+20%").
+    """
+    if err := _check_permission("create_voice_announcement"):
+        return err
+    data: dict = {
+        "display_name": display_name,
+        "script_text": script_text,
+        "voice_name": voice_name,
+        "language": language,
+    }
+    if emotion:
+        data["emotion"] = emotion
+    if speech_rate:
+        data["speech_rate"] = speech_rate
+    result = await _call_api("create_voice_announcement", data)
+    return _json_result(result)
+
+
+@mcp.tool()
+async def get_voice_announcement_status(asset_id: str) -> str:
+    """Check whether a voice announcement has finished synthesising.
+
+    Returns ``generation_status`` (PENDING/RUNNING/DONE/FAILED),
+    ``generation_error`` when it failed, and ``last_generated_at``.
+
+    Use this to poll after ``create_voice_announcement`` or
+    ``update_voice_announcement``. Once the status is DONE, the asset behaves
+    like any other media asset - use ``get_asset`` for its duration and size,
+    and schedule it with the normal schedule tools.
+
+    Args:
+        asset_id: UUID of the voice announcement asset.
+    """
+    if err := _check_permission("get_voice_announcement_status"):
+        return err
+    result = await _call_api("get_voice_announcement_status", asset_id)
+    return _json_result(result)
+
+
+@mcp.tool()
+async def update_voice_announcement(
+    asset_id: str,
+    script_text: str,
+    voice_name: str,
+    language: str = "en-US",
+    display_name: str | None = None,
+    emotion: str | None = None,
+    speech_rate: str | None = None,
+) -> str:
+    """Re-synthesise an existing voice announcement with a new script or voice.
+
+    This replaces the asset's audio in place and re-runs synthesis in the
+    background, so poll ``get_voice_announcement_status`` afterwards just as
+    you would after creating one.
+
+    ``script_text`` and ``voice_name`` are required even when only one of them
+    is changing - pass the existing values for the fields you want to keep.
+
+    Args:
+        asset_id: UUID of the voice announcement asset to update.
+        script_text: The text to speak.
+        voice_name: A ``short_name`` from ``list_voices``.
+        language: BCP-47 language tag for the script. Defaults to "en-US".
+        display_name: Optional new name for the asset; unchanged if omitted.
+        emotion: Optional speaking style, valid only if listed for that voice.
+        speech_rate: Optional rate adjustment (e.g. "-10%", "+20%").
+    """
+    if err := _check_permission("update_voice_announcement"):
+        return err
+    data: dict = {
+        "script_text": script_text,
+        "voice_name": voice_name,
+        "language": language,
+    }
+    if display_name:
+        data["display_name"] = display_name
+    if emotion:
+        data["emotion"] = emotion
+    if speech_rate:
+        data["speech_rate"] = speech_rate
+    result = await _call_api("update_voice_announcement", asset_id, data)
     return _json_result(result)
 
 
