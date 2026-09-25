@@ -131,6 +131,18 @@ jobs:
           echo "new_mcp_revision=${MCP_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy infrastructure
+        env:
+          # Environment config lives in infra/parameters/goodwill.bicepparam;
+          # it reads these via readEnvironmentVariable(). Secrets are never
+          # committed, and static config is no longer duplicated inline.
+          INFRA_PREFIX: ${{ vars.INFRA_PREFIX }}
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          CMS_SECRET_KEY: ${{ secrets.CMS_SECRET_KEY }}
+          CMS_ADMIN_PASSWORD: ${{ secrets.CMS_ADMIN_PASSWORD }}
+          GITHUB_ISSUES_TOKEN: ${{ secrets.AGORA_CMS_ISSUES_TOKEN }}
+          ADMIN_PRINCIPAL_ID: ${{ secrets.ADMIN_PRINCIPAL_ID }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+          CMS_BASE_URL_OVERRIDE: ${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}
         run: |
           VERSION='${{ steps.resolve.outputs.resolved_version }}'
           CMS_REF="ghcr.io/sslivins/agora-cms:${VERSION}"
@@ -140,16 +152,13 @@ jobs:
           echo "  cms:    $CMS_REF"
           echo "  mcp:    $MCP_REF"
           echo "  worker: $WORKER_REF"
+          # The .bicepparam carries `using '../main.bicep'`, so --template-file
+          # must NOT be passed alongside it. Inline --parameters after the file
+          # override it, so per-run values (images, revision suffixes) win.
           az deployment group create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --template-file infra/main.bicep \
+            --parameters infra/parameters/goodwill.bicepparam \
             --parameters \
-              prefix='${{ vars.INFRA_PREFIX }}' \
-              postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
-              cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
-              cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
-              githubIssuesToken='${{ secrets.AGORA_CMS_ISSUES_TOKEN }}' \
-              adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=${{ inputs.deployRoleAssignments }} \
               cmsImage="$CMS_REF" \
               mcpImage="$MCP_REF" \
@@ -157,14 +166,7 @@ jobs:
               cmsRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
               previousCmsRevisionName='${{ steps.revisions.outputs.previous_cms_revision }}' \
               mcpRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
-              previousMcpRevisionName='${{ steps.revisions.outputs.previous_mcp_revision }}' \
-              alertEmail='${{ vars.ALERT_EMAIL }}' \
-              cmsBaseUrlOverride='${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}' \
-              deployAzureOpenAI=true \
-              azureOpenAIRegion='westus' \
-              azureOpenAIChatModel='gpt-4o' \
-              azureOpenAIChatModelVersion='2024-11-20' \
-              azureOpenAIChatCapacity=30
+              previousMcpRevisionName='${{ steps.revisions.outputs.previous_mcp_revision }}'
 
       - name: Bind custom domains (if configured)
         if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''

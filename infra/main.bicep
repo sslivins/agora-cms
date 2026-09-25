@@ -99,7 +99,7 @@ param cmsMemory string = '2Gi'
 @minValue(1)
 param cmsMaxReplicas int = 2
 
-@description('When true, Bicep manages Postgres max_connections via the replica-count formula (base + perReplica*cmsMaxReplicas). When false (default, all envs except dev), max_connections stays at the B1ms default (50). Enable per-env in its .bicepparam.')
+@description('When true, Bicep manages Postgres max_connections via the replica-count formula (base + perReplica*cmsMaxReplicas). Disabled by default in EVERY env, including dev: Azure Postgres Flexible Server restarts whenever a deploy APPLIES a restart-required static parameter, even when the value is unchanged, which bounced the DB mid-rollout and broke every dev deploy after PR #789. Re-enabling requires moving the static-param write out of the per-deploy path. See infra/parameters/goodwill-dev.bicepparam.')
 param manageMaxConnections bool = false
 
 @description('Object ID of the Azure AD user/principal for Key Vault admin access')
