@@ -3,9 +3,19 @@ using '../main.bicep'
 // ──────────────────────────────────────────────────────────────
 // goodwill-dev.bicepparam — Goodwill DEV environment parameter values
 //
-// Deployed by .github/workflows/deploy-goodwill-dev.yml on every
-// successful "Publish & Deploy" run on main (auto-deploy).  Gated by
-// the `seattle-goodwill-dev` GH environment.
+// THIS FILE IS APPLIED BY THE DEPLOY. It is passed to
+// `az deployment group create --parameters` by
+// .github/workflows/deploy-goodwill-dev.yml on every successful
+// "Publish & Deploy" run on main (auto-deploy).  Gated by the
+// `seattle-goodwill-dev` GH environment.
+//
+// It was previously documentation only — the workflow duplicated
+// every value inline — so edits here had no effect and the two
+// copies had to be kept in sync by hand.
+//
+// Rule of thumb: anything describing THE ENVIRONMENT belongs here.
+// Anything describing A SINGLE RUN (image tags, revision suffixes)
+// stays as an inline override in the workflow.
 //
 // This is a sibling of goodwill.bicepparam (the Goodwill PROD env).
 // It targets resource group `agoragw-cms-dev-rg` in the same Goodwill
@@ -22,22 +32,24 @@ using '../main.bicep'
 // flexibility. westus has full Container Apps + Postgres Flexible
 // + Web PubSub coverage so all bicep modules apply unchanged.)
 //
-// Manual deploy (rare — prefer the workflow):
+// Manual deploy (rare — prefer the workflow); secrets come from the
+// environment, matching how CI supplies them:
+//   $env:POSTGRES_ADMIN_PASSWORD = '<secure>'   # + CMS_SECRET_KEY,
+//   $env:CMS_ADMIN_PASSWORD = '<secure>'        #   ADMIN_PRINCIPAL_ID
 //   az deployment group create \
 //     --resource-group agoragw-cms-dev-rg \
-//     --template-file infra/main.bicep \
 //     --parameters infra/parameters/goodwill-dev.bicepparam \
-//     --parameters postgresAdminPassword='<secure>' \
-//                  cmsSecretKey='<secure>' \
-//                  cmsAdminPassword='<secure>' \
-//                  adminPrincipalId='<entra-oid-in-goodwill-tenant>'
+//     --parameters cmsImage='...' mcpImage='...' workerImage='...'
 //
-// adminPrincipalId is intentionally NOT set here.  It must be supplied
-// at deploy time (the workflow passes it from the seattle-goodwill-dev
-// environment's ADMIN_PRINCIPAL_ID secret).
+// adminPrincipalId is still never a literal here — it is read from
+// the environment (ADMIN_PRINCIPAL_ID), which the workflow supplies
+// from the seattle-goodwill-dev environment's secret.
 // ──────────────────────────────────────────────────────────────
 
-param prefix = 'agoragwdev'
+// INFRA_PREFIX is a GitHub Actions variable on the
+// `seattle-goodwill-dev` environment; the literal is the fallback
+// for manual deploys.
+param prefix = readEnvironmentVariable('INFRA_PREFIX', 'agoragwdev')
 param location = 'westus'
 
 param postgresAdminLogin = 'agoraadmin'
@@ -97,16 +109,22 @@ param azureOpenAIChatCapacity = 30
 // before first real rollout and move this if preview support shifts.
 param deployAzureSpeech = true
 param azureSpeechRegion = 'westus'
+param azureSpeechSku = 'S0'
 
-// Secure params — passed via the deploy-goodwill-dev workflow, never commit values:
-// param postgresAdminPassword = '<set-via-cli>'
-// param cmsSecretKey = '<set-via-cli>'
-// param cmsAdminPassword = '<set-via-cli>'
-// param adminPrincipalId = '<set-via-cli>'
+// ── Values supplied by the deploy workflow's environment ──
+//
+// See goodwill.bicepparam for why these use readEnvironmentVariable:
+// a .bicepparam must assign every parameter that has no default in
+// main.bicep, or the build fails BCP258 — the error that caused this
+// file to be bypassed entirely.
+param postgresAdminPassword = readEnvironmentVariable('POSTGRES_ADMIN_PASSWORD')
+param cmsSecretKey = readEnvironmentVariable('CMS_SECRET_KEY')
+param cmsAdminPassword = readEnvironmentVariable('CMS_ADMIN_PASSWORD')
+param adminPrincipalId = readEnvironmentVariable('ADMIN_PRINCIPAL_ID', '')
+param githubIssuesToken = readEnvironmentVariable('GITHUB_ISSUES_TOKEN', '')
+param alertEmail = readEnvironmentVariable('ALERT_EMAIL', '')
+param cmsBaseUrlOverride = readEnvironmentVariable('CMS_BASE_URL_OVERRIDE', '')
 
-// Container images — set by the deploy-goodwill-dev workflow via
-// --parameters overrides. Dev pins by tag and tracks whatever was
-// just published to main:
-// param cmsImage = 'ghcr.io/sslivins/agora-cms:<version>'
-// param mcpImage = 'ghcr.io/sslivins/agora-cms-mcp:<version>'
-// param workerImage = 'ghcr.io/sslivins/agora-worker:<version>'
+// Per-run values stay as inline --parameters overrides in the
+// workflow: cmsImage / mcpImage / workerImage, the revision
+// suffixes, and deployRoleAssignments.
